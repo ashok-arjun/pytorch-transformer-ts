@@ -163,10 +163,10 @@ class LagGPTLightningModule(pl.LightningModule):
 
     # train
     def _compute_loss(self, batch):
-        past_target = batch["past_target"]
-        past_observed_values = batch["past_observed_values"]
-        future_target = batch["future_target"]
-        future_observed_values = batch["future_observed_values"]
+        past_target = batch["past_target"] # (2, 1157)
+        past_observed_values = batch["past_observed_values"] # (2, 1157)
+        future_target = batch["future_target"] # (2, 13)
+        future_observed_values = batch["future_observed_values"] # (2, 13)
 
         extra_dims = len(future_target.shape) - len(past_target.shape)
         extra_shape = future_target.shape[:extra_dims]
