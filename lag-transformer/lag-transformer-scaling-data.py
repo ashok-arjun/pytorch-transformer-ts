@@ -94,7 +94,7 @@ gluonts_ds = [
         get_dataset("m4_yearly", path=dataset_path).train,
         get_dataset("wind_farms_without_missing", path=dataset_path).train,
 ]
-dataset = CombinedDataset(gluonts_ds, weights=([sum([len(x["target"]) for x in d]) for d in gluonts_ds] if config["data"]["weighted"] else None)  ) 
+dataset = CombinedDataset(gluonts_ds, weights=([sum([len(x["target"]) for x in d]) for d in gluonts_ds] if config["data"]["weighted"] else None), seed=args.seed) 
 
 
 val_dataset = get_dataset(config["data"]["val_data"], path=dataset_path).test
