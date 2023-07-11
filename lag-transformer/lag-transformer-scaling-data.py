@@ -5,22 +5,29 @@ import matplotlib.pyplot as plt
 
 from gluonts.evaluation import make_evaluation_predictions, Evaluator
 from gluonts.dataset.repository.datasets import get_dataset
+import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.callbacks import DeviceStatsMonitor
 
 from estimator import LagTransformerEstimator
 
 import argparse
 import yaml
-
+import os
 
 parser = argparse.ArgumentParser()
 parser.add_argument("filename", help = "YAML config file.")
+parser.add_argument("--suffix", default="", type=str)
+parser.add_argument("--seed", default=42, type=int)
+parser.add_argument("--dataset_path", default="/home/toolkit/datasets", type=str)
+parser.add_argument("--precision", default="32", type=str, choices=["32", "16", "bf16-mixed"])
 args = parser.parse_args()
 
 
 with open(args.filename, mode="rt", encoding="utf-8") as file:
     config = yaml.safe_load(file)
 
+pl.seed_everything(args.seed)
 
 class CombinedDatasetIterator:
     def __init__(self, datasets, seed, weights):
@@ -49,7 +56,7 @@ class CombinedDataset:
         return sum([len(ds) for ds in self._datasets])
 
 print("Loading data...")
-dataset_path = Path("../datasets")
+dataset_path = Path(args.dataset_path)
 gluonts_ds = [
         get_dataset("airpassengers", path=dataset_path).train,
         get_dataset("australian_electricity_demand", path=dataset_path).train,
@@ -93,14 +100,13 @@ dataset = CombinedDataset(gluonts_ds, weights=([sum([len(x["target"]) for x in d
 val_dataset = get_dataset(config["data"]["val_data"], path=dataset_path).test
 meta = get_dataset(config["data"]["val_data"], path=dataset_path).metadata
 
-experiment_name = ("data-scaling-weighted-"+str(config["transformer"]["aug_prob"]) if config["data"]["weighted"] else "data-scaling-uniform-"+str(config["transformer"]["aug_prob"]))
-experiment_logger = CSVLogger(save_dir="data-scaling-logs", name=experiment_name)
-experiment_version = experiment_logger.version
-
-print("Running "+ experiment_name+ " version "+ str(experiment_version))
+experiment_name = ("data-scaling-weighted-"+str(config["transformer"]["aug_prob"])+"_"+args.suffix if config["data"]["weighted"] else "data-scaling-uniform-"+str(config["transformer"]["aug_prob"])+"_"+args.suffix)
+fulldir = "/home/toolkit/pytorch-transformer-ts/lag-transformer/" + experiment_name + "/" + str(args.seed)
+os.makedirs(fulldir, exist_ok=True)
+experiment_logger = CSVLogger(save_dir=fulldir)
 
 estimator = LagTransformerEstimator(
-    prediction_length=meta.prediction_length,
+    prediction_length=512,
     context_length=config["transformer"]["context_length"], # block_size: int = 2048 
     batch_size=config["transformer"]["batch_size"], # 4
     num_encoder_layers=config["transformer"]["num_encoder_layers"],
@@ -116,7 +122,7 @@ estimator = LagTransformerEstimator(
     dropout = config["transformer"]["dropout"],
     weight_decay = config["transformer"]["weight_decay"],
     lr = config["transformer"]["lr"],
-    trainer_kwargs=dict(max_epochs=config["transformer"]["max_epochs"], accelerator="gpu", precision="bf16-mixed", logger=experiment_logger, devices=[config["CUDA"]["device_id"]]),
+    trainer_kwargs=dict(max_epochs=config["transformer"]["max_epochs"], accelerator="gpu", precision=args.precision, logger=experiment_logger, devices=[config["CUDA"]["device_id"]]),
 )
 
 predictor_output = estimator.train_model(
@@ -125,15 +131,14 @@ predictor_output = estimator.train_model(
     shuffle_buffer_length = config["data"]["shuffle_buffer_length"]
 )
 
+# loss_df = pd.read_csv("/home/toolkit/pytorch-transformer-ts/lag-transformer/data-scaling-logs-test/"+experiment_name+"/version_"+str(experiment_version)+"/metrics.csv")
+# train_loss = loss_df.dropna(subset=["train_loss"])
+# val_loss = loss_df.dropna(subset=["val_loss"])
 
-loss_df = pd.read_csv("data-scaling-logs/"+experiment_name+"/version_"+str(experiment_version)+"/metrics.csv")
-train_loss = loss_df.dropna(subset=["train_loss"])
-val_loss = loss_df.dropna(subset=["val_loss"])
-
-fig, ax = plt.subplots()
-ax.plot(train_loss["epoch"], train_loss["train_loss"], label= "train")
-ax.plot(val_loss["epoch"], val_loss["val_loss"], label="val")
-ax.legend()
-ax.xscale("log")
-fig.savefig("data-scaling-logs/"+experiment_name+"/version_"+str(experiment_version)+"/loss.png") 
-plt.close(fig)  
+# fig, ax = plt.subplots()
+# ax.plot(train_loss["epoch"], train_loss["train_loss"], label= "train")
+# ax.plot(val_loss["epoch"], val_loss["val_loss"], label="val")
+# ax.legend()
+# ax.xscale("log")
+# fig.savefig("/home/toolkit/pytorch-transformer-ts/lag-transformer/data-scaling-logs/"+experiment_name+"/version_"+str(experiment_version)+"/loss.png") 
+# plt.close(fig)  
