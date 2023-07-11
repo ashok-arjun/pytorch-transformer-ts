@@ -9,7 +9,7 @@ transformer:
   num_encoder_layers: 8
   num_decoder_layers: 4
   dim_feedforward: 256
-  d_model: 128
+  d_model_per_head: 32
   activation: gelu
   dropout: 0.1
   context_length: 512
