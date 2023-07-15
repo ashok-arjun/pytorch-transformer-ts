@@ -110,15 +110,16 @@ os.makedirs(fulldir, exist_ok=True)
 # Code to retrieve the version with the highest #epoch stored and restore it incl directory and its checkpoint
 lightning_version_to_use, ckpt_path = None, None
 max_epoch = -1
-for lightning_version in os.listdir(fulldir+"/lightning_logs/"):
-    ckpts = glob(fulldir+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
-    if len(ckpts): 
-        epoch = int(ckpts[0][ckpts[0].find("=")+1:ckpts[0].find("-step")])
-        if epoch > max_epoch:
-            lightning_version_to_use = lightning_version
-            max_epoch = epoch
-            ckpt_path = ckpts[0]
-if lightning_version_to_use: print("Using lightning_version", lightning_version_to_use, "with epoch", max_epoch, "restoring from checkpoint at path", ckpt_path)
+if "lightning_logs" in os.listdir(fulldir):
+    for lightning_version in os.listdir(fulldir+"/lightning_logs/"):
+        ckpts = glob(fulldir+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
+        if len(ckpts): 
+            epoch = int(ckpts[0][ckpts[0].find("=")+1:ckpts[0].find("-step")])
+            if epoch > max_epoch:
+                lightning_version_to_use = lightning_version
+                max_epoch = epoch
+                ckpt_path = ckpts[0]
+    if lightning_version_to_use: print("Using lightning_version", lightning_version_to_use, "with epoch", max_epoch, "restoring from checkpoint at path", ckpt_path)
 
 # Make a CSV Logger with the specific version
 experiment_logger = CSVLogger(save_dir=fulldir)
@@ -128,14 +129,14 @@ experiment_logger = CSVLogger(save_dir=fulldir)
 #                             config=config, id=sha1(fulldir.encode("utf-8")).hexdigest()[:8])
 logger = [experiment_logger]
 
-checkpoint_callback = ModelCheckpoint(
-    save_last=True,
-    verbose=True,
-    monitor='val_loss',
-    mode='min'
-)
+# checkpoint_callback = ModelCheckpoint(
+#     save_last=True,
+#     verbose=True,
+#     monitor='val_loss',
+#     mode='min'
+# )
 early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=20, verbose=True, mode="min")
-callbacks=[checkpoint_callback, early_stop_callback]
+callbacks=[early_stop_callback]
 
 estimator = LagTransformerEstimator(
     prediction_length=512,
