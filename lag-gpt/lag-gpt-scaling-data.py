@@ -1,13 +1,16 @@
-
-
 import random
 from pathlib import Path
 import pandas as pd
+import os
 import matplotlib.pyplot as plt
+from glob import glob
+from hashlib import sha1
 
 from gluonts.evaluation import make_evaluation_predictions, Evaluator
 from gluonts.dataset.repository.datasets import get_dataset
-from pytorch_lightning.loggers import CSVLogger
+import pytorch_lightning as pl
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, EarlyStopping
 
 from estimator import LagGPTEstimator
 from pathlib import Path
@@ -17,11 +20,17 @@ import yaml
 
 parser = argparse.ArgumentParser()
 parser.add_argument("filename", help = "YAML config file.")
+parser.add_argument("--suffix", default="", type=str)
+parser.add_argument("--seed", default=42, type=int)
+parser.add_argument("--dataset_path", default="/home/toolkit/datasets", type=str)
+parser.add_argument("--precision", default="32", type=str, choices=["32", "16", "bf16-mixed"])
 args = parser.parse_args()
 
 
 with open(args.filename, mode="rt", encoding="utf-8") as file:
     config = yaml.safe_load(file)
+
+pl.seed_everything(args.seed)
 
 class CombinedDatasetIterator:
     def __init__(self, datasets, seed, weights):
@@ -49,7 +58,7 @@ class CombinedDataset:
         return sum([len(ds) for ds in self._datasets])
 
 print("Loading data...")
-dataset_path = Path("../datasets")
+dataset_path = Path(args.dataset_path)
 gluonts_ds = [
         get_dataset("airpassengers", path=dataset_path).train,
         get_dataset("australian_electricity_demand", path=dataset_path).train,
@@ -92,11 +101,41 @@ dataset = CombinedDataset(gluonts_ds, weights=([sum([len(x["target"]) for x in d
 val_dataset = get_dataset(config["dataset"]["val"], path=dataset_path).test
 meta = get_dataset(config["dataset"]["val"], path=dataset_path).metadata
 
-experiment_name = ("data-scaling-weighted-"+str(config["gpt"]["aug_prob"]) if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(config["gpt"]["aug_prob"]))
-experiment_logger = CSVLogger(save_dir="data-scaling-logs", name=experiment_name)
-experiment_version = experiment_logger.version
+# Make the experiment_name
+experiment_name = ("data-scaling-weighted-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix)
+fulldir = "/home/toolkit/pytorch-transformer-ts/lag-gpt/" + experiment_name
+os.makedirs(fulldir, exist_ok=True)
 
-print("Running "+ experiment_name+ " version "+ str(experiment_version))
+# Code to retrieve the version with the highest #epoch stored and restore it incl directory and its checkpoint
+lightning_version_to_use, ckpt_path = None, None
+max_epoch = -1
+if "lightning_logs" in os.listdir(fulldir):
+    for lightning_version in os.listdir(fulldir+"/lightning_logs/"):
+        ckpts = glob(fulldir+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
+        if len(ckpts): 
+            epoch = int(ckpts[0][ckpts[0].find("=")+1:ckpts[0].find("-step")])
+            if epoch > max_epoch:
+                lightning_version_to_use = lightning_version
+                max_epoch = epoch
+                ckpt_path = ckpts[0]
+    if lightning_version_to_use: print("Using lightning_version", lightning_version_to_use, "with epoch", max_epoch, "restoring from checkpoint at path", ckpt_path)
+
+# Make a CSV Logger with the specific version
+experiment_logger = CSVLogger(save_dir=fulldir)
+# experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir, group=experiment_name, \
+#                            tags=config["wandb"]["tags"] if "wandb" in config else [], \
+#                             project=config["wandb"]["tags"] if "wandb" in config else "scaling_logs", \
+#                             config=config, id=sha1(fulldir.encode("utf-8")).hexdigest()[:8])
+logger = [experiment_logger]
+
+# checkpoint_callback = ModelCheckpoint(
+#     save_last=True,
+#     verbose=True,
+#     monitor='val_loss',
+#     mode='min'
+# )
+early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=20, verbose=True, mode="min")
+callbacks=[early_stop_callback]
 
 estimator = LagGPTEstimator(
     prediction_length=meta.prediction_length,
@@ -109,9 +148,11 @@ estimator = LagGPTEstimator(
     aug_prob = config["gpt"]["aug_prob"],
     aug_rate = config["gpt"]["aug_rate"],
     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
-    trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", precision="bf16-mixed", logger=experiment_logger, devices=[config["CUDA"]["device_id"]]),
+    trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
+                        precision=args.precision, logger=logger, devices=[config["CUDA"]["device_id"]], \
+                        callbacks=callbacks, check_val_every_n_epoch=config["check_val_every_n_epoch"] if "check_val_every_n_epoch" in config else 1),
+    ckpt_path = ckpt_path
 )
-
 
 predictor = estimator.train(
     training_data=dataset, 
@@ -120,14 +161,14 @@ predictor = estimator.train(
 )
 
 
-loss_df = pd.read_csv("data-scaling-logs/"+experiment_name+"/version_"+str(experiment_version)+"/metrics.csv")
-train_loss = loss_df.dropna(subset=["train_loss"])
-val_loss = loss_df.dropna(subset=["val_loss"])
+# loss_df = pd.read_csv("data-scaling-logs/"+experiment_name+"/version_"+str(experiment_version)+"/metrics.csv")
+# train_loss = loss_df.dropna(subset=["train_loss"])
+# val_loss = loss_df.dropna(subset=["val_loss"])
 
-fig, ax = plt.subplots()
-ax.plot(train_loss["epoch"], train_loss["train_loss"], label= "train")
-ax.plot(val_loss["epoch"], val_loss["val_loss"], label="val")
-ax.legend()
-ax.set_xscale("log")
-fig.savefig("data-scaling-logs/"+experiment_name+"/version_"+str(experiment_version)+"/loss.png") 
-plt.close(fig)  
+# fig, ax = plt.subplots()
+# ax.plot(train_loss["epoch"], train_loss["train_loss"], label= "train")
+# ax.plot(val_loss["epoch"], val_loss["val_loss"], label="val")
+# ax.legend()
+# ax.set_xscale("log")
+# fig.savefig("data-scaling-logs/"+experiment_name+"/version_"+str(experiment_version)+"/loss.png") 
+# plt.close(fig)  
