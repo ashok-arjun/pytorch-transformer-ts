@@ -1,13 +1,15 @@
 import random
 from pathlib import Path
 import pandas as pd
+from glob import glob
 import matplotlib.pyplot as plt
+from hashlib import sha1
 
 from gluonts.evaluation import make_evaluation_predictions, Evaluator
 from gluonts.dataset.repository.datasets import get_dataset
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import CSVLogger
-from pytorch_lightning.callbacks import DeviceStatsMonitor
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, EarlyStopping
 
 from estimator import LagTransformerEstimator
 
@@ -100,10 +102,40 @@ dataset = CombinedDataset(gluonts_ds, weights=([sum([len(x["target"]) for x in d
 val_dataset = get_dataset(config["data"]["val_data"], path=dataset_path).test
 meta = get_dataset(config["data"]["val_data"], path=dataset_path).metadata
 
+# Make the experiment_name
 experiment_name = ("data-scaling-weighted-"+str(config["transformer"]["aug_prob"])+"_"+args.suffix if config["data"]["weighted"] else "data-scaling-uniform-"+str(config["transformer"]["aug_prob"])+"_"+args.suffix)
 fulldir = "/home/toolkit/pytorch-transformer-ts/lag-transformer/" + experiment_name + "/" + str(args.seed)
 os.makedirs(fulldir, exist_ok=True)
+
+# Code to retrieve the version with the highest #epoch stored and restore it incl directory and its checkpoint
+lightning_version_to_use, ckpt_path = None, None
+max_epoch = -1
+for lightning_version in os.listdir(fulldir+"/lightning_logs/"):
+    ckpts = glob(fulldir+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
+    if len(ckpts): 
+        epoch = int(ckpts[0][ckpts[0].find("=")+1:ckpts[0].find("-step")])
+        if epoch > max_epoch:
+            lightning_version_to_use = lightning_version
+            max_epoch = epoch
+            ckpt_path = ckpts[0]
+if lightning_version_to_use: print("Using lightning_version", lightning_version_to_use, "with epoch", max_epoch, "restoring from checkpoint at path", ckpt_path)
+
+# Make a CSV Logger with the specific version
 experiment_logger = CSVLogger(save_dir=fulldir)
+# experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir, group=experiment_name, \
+#                            tags=config["wandb"]["tags"] if "wandb" in config else [], \
+#                             project=config["wandb"]["tags"] if "wandb" in config else "scaling_logs", \
+#                             config=config, id=sha1(fulldir.encode("utf-8")).hexdigest()[:8])
+logger = [experiment_logger]
+
+checkpoint_callback = ModelCheckpoint(
+    save_last=True,
+    verbose=True,
+    monitor='val_loss',
+    mode='min'
+)
+early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=20, verbose=True, mode="min")
+callbacks=[checkpoint_callback, early_stop_callback]
 
 estimator = LagTransformerEstimator(
     prediction_length=512,
@@ -122,13 +154,16 @@ estimator = LagTransformerEstimator(
     dropout = config["transformer"]["dropout"],
     weight_decay = config["transformer"]["weight_decay"],
     lr = config["transformer"]["lr"],
-    trainer_kwargs=dict(max_epochs=config["transformer"]["max_epochs"], accelerator="gpu", precision=args.precision, logger=experiment_logger, devices=[config["CUDA"]["device_id"]]),
+    trainer_kwargs=dict(max_epochs=config["transformer"]["max_epochs"], accelerator="gpu", \
+                        precision=args.precision, logger=logger, devices=[config["CUDA"]["device_id"]], \
+                        callbacks=callbacks, check_val_every_n_epoch=config["check_val_every_n_epoch"] if "check_val_every_n_epoch" in config else 1),
+    ckpt_path = ckpt_path
 )
-
 predictor_output = estimator.train_model(
     training_data=dataset, 
     validation_data=val_dataset,
-    shuffle_buffer_length = config["data"]["shuffle_buffer_length"]
+    shuffle_buffer_length = config["data"]["shuffle_buffer_length"],
+    ckpt_path=ckpt_path
 )
 
 # loss_df = pd.read_csv("/home/toolkit/pytorch-transformer-ts/lag-transformer/data-scaling-logs-test/"+experiment_name+"/version_"+str(experiment_version)+"/metrics.csv")
