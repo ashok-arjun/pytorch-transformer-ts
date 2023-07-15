@@ -7,7 +7,7 @@ gpt:
   max_epochs: 10000
   context_length: 1024
   n_layer: 8
-  n_embd: 64
+  n_embd_per_head: 16
   n_head: 4
   scaling: std
   lr: 0.001
