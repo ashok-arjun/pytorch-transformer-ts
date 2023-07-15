@@ -157,7 +157,8 @@ estimator = LagGPTEstimator(
 predictor = estimator.train(
     training_data=dataset, 
     validation_data=val_dataset,
-    shuffle_buffer_length=1000
+    shuffle_buffer_length=1000,
+    ckpt_path=ckpt_path
 )
 
 
