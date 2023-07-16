@@ -109,7 +109,10 @@ os.makedirs(fulldir, exist_ok=True)
 # Code to retrieve the version with the highest #epoch stored and restore it incl directory and its checkpoint
 lightning_version_to_use, ckpt_path = None, None
 max_epoch = -1
-if "lightning_logs" in os.listdir(fulldir):
+if "scaling_logs" in os.listdir(fulldir):
+    ckpts = glob(fulldir+"/scaling_logs/" + sha1(fulldir.encode("utf-8")).hexdigest()[:8] + "/checkpoints/*.ckpt")
+    if len(ckpts): ckpt_path = ckpts[0]
+elif "lightning_logs" in os.listdir(fulldir):
     for lightning_version in os.listdir(fulldir+"/lightning_logs/"):
         ckpts = glob(fulldir+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
         if len(ckpts): 
