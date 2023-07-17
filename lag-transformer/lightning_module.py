@@ -54,9 +54,11 @@ class LagTransformerLightningModule(pl.LightningModule):
     def on_validation_epoch_end(self):
         # Access the best metric value so far
         best_val_loss = self.trainer.early_stopping_callback.best_score
+        wait_count = self.trainer.early_stopping_callback.wait_count
         # Log the best metric value
         self.log("best_val_loss", best_val_loss, on_epoch=True, on_step=False, prog_bar=False)
-        
+        self.log("wait_count", wait_count, on_epoch=True, on_step=False, prog_bar=False)
+
     def configure_optimizers(self):
         """Returns the optimizer to use"""
         return torch.optim.Adam(
