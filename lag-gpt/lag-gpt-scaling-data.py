@@ -124,11 +124,16 @@ elif "lightning_logs" in os.listdir(fulldir):
     if lightning_version_to_use: print("Using lightning_version", lightning_version_to_use, "with epoch", max_epoch, "restoring from checkpoint at path", ckpt_path)
 
 # Make a CSV Logger with the specific version
-experiment_logger = CSVLogger(save_dir=fulldir)
-# experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir, group=experiment_name, \
-#                            tags=config["wandb"]["tags"] if "wandb" in config else [], \
-#                             project=config["wandb"]["tags"] if "wandb" in config else "scaling_logs", \
-#                             config=config, id=sha1(fulldir.encode("utf-8")).hexdigest()[:8])
+if "logger" in config:
+    if config["logger"] == "csv":
+        experiment_logger = CSVLogger(save_dir=fulldir)
+    else:
+        experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir, group=experiment_name, \
+                                tags=config["wandb"]["tags"] if "wandb" in config else [], \
+                                    project=config["wandb"]["tags"] if "wandb" in config else "scaling_logs", \
+                                    config=config, id=sha1(fulldir.encode("utf-8")).hexdigest()[:8])
+else:
+    experiment_logger = CSVLogger(save_dir=fulldir)
 logger = [experiment_logger]
 
 # checkpoint_callback = ModelCheckpoint(
