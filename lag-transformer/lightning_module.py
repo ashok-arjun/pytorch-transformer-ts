@@ -41,16 +41,22 @@ class LagTransformerLightningModule(pl.LightningModule):
                 )
 
         train_loss = self(batch)
-        self.log("train_loss", train_loss, on_epoch=True, on_step=False, prog_bar=True)
+        self.log("train_loss", train_loss, on_epoch=True, on_step=False, prog_bar=False)
         return train_loss
 
     def validation_step(self, batch, batch_idx: int):
         """Execute validation step"""
         with torch.inference_mode():
             val_loss = self(batch)
-        self.log("val_loss", val_loss, on_epoch=True, on_step=False, prog_bar=True)
+        self.log("val_loss", val_loss, on_epoch=True, on_step=False, prog_bar=False)
         return val_loss
 
+    def on_validation_epoch_end(self):
+        # Access the best metric value so far
+        best_val_loss = self.trainer.early_stopping_callback.best_score
+        # Log the best metric value
+        self.log("best_val_loss", best_val_loss, on_epoch=True, on_step=False, prog_bar=False)
+        
     def configure_optimizers(self):
         """Returns the optimizer to use"""
         return torch.optim.Adam(
