@@ -14,6 +14,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, Ear
 
 from estimator import LagGPTEstimator
 from pathlib import Path
+import pathlib
 
 import argparse
 import yaml
@@ -103,7 +104,7 @@ meta = get_dataset(config["dataset"]["val"], path=dataset_path).metadata
 
 # Make the experiment_name
 experiment_name = ("data-scaling-weighted-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix)
-fulldir = "/home/toolkit/pytorch-transformer-ts/lag-gpt/" + experiment_name + "/" + str(args.seed)
+fulldir = os.path.join(pathlib.Path(__file__).parent.resolve(), experiment_name, str(args.seed))
 os.makedirs(fulldir, exist_ok=True)
 
 # Code to retrieve the version with the highest #epoch stored and restore it incl directory and its checkpoint
