@@ -127,7 +127,7 @@ elif "lightning_logs" in os.listdir(fulldir):
 # Make a CSV Logger with the specific version
 if "logger" in config:
     if config["logger"] == "csv":
-        experiment_logger = CSVLogger(save_dir=fulldir)
+        experiment_logger = CSVLogger(save_dir=fulldir, flush_logs_every_n_steps=1)
     else:
         experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir, group=experiment_name, \
                                 tags=config["wandb"]["tags"] if "wandb" in config else [], \
@@ -145,6 +145,7 @@ logger = [experiment_logger]
 # )
 early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=50, verbose=True, mode="min")
 callbacks=[early_stop_callback]
+callbacks = [] # For data scaling
 
 estimator = LagGPTEstimator(
     prediction_length=meta.prediction_length,

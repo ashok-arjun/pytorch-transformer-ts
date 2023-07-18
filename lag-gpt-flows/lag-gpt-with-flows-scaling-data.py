@@ -1,21 +1,23 @@
 import random
 from pathlib import Path
 import pandas as pd
+import os
 import matplotlib.pyplot as plt
+from glob import glob
+from hashlib import sha1
 
 from gluonts.evaluation import make_evaluation_predictions, Evaluator
 from gluonts.dataset.repository.datasets import get_dataset
+import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, EarlyStopping
 
 from estimator import LagGPTFlowsEstimator
 from pathlib import Path
+import pathlib
 
 import argparse
 import yaml
-
-import os
-import pathlib
-import pytorch_lightning as pl
 
 parser = argparse.ArgumentParser()
 parser.add_argument("filename", help = "YAML config file.")
@@ -100,12 +102,44 @@ dataset = CombinedDataset(gluonts_ds, weights=([sum([len(x["target"]) for x in d
 val_dataset = get_dataset(config["dataset"]["val"], path=dataset_path).test
 meta = get_dataset(config["dataset"]["val"], path=dataset_path).metadata
 
+# Make the experiment_name
 experiment_name = ("data-scaling-weighted-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix)
 fulldir = os.path.join(pathlib.Path(__file__).parent.resolve(), "scaling-logs", experiment_name, str(args.seed)) # Always creates the experiment directory inside "lag-gpt-flows"
 os.makedirs(fulldir, exist_ok=True)
-experiment_logger = CSVLogger(save_dir=fulldir, flush_logs_every_n_steps=config["metrics"]["num_steps"]) if config["metrics"]["logger"]=="csv" else WandbLogger(name=experiment_name + "/" + args.seed, group=experiment_name, save_dir=fulldir, config=config)
-experiment_version = experiment_logger.version # Should be 1 always since we create a new experiment for each seed
-print("Experiment directory:", fulldir)
+
+# Code to retrieve the version with the highest #epoch stored and restore it incl directory and its checkpoint
+lightning_version_to_use, ckpt_path = None, None
+max_epoch = -1
+if "scaling_logs" in os.listdir(fulldir):
+    ckpts = glob(fulldir+"/scaling_logs/" + sha1(fulldir.encode("utf-8")).hexdigest()[:8] + "/checkpoints/*.ckpt")
+    if len(ckpts): ckpt_path = ckpts[0]
+elif "lightning_logs" in os.listdir(fulldir):
+    for lightning_version in os.listdir(fulldir+"/lightning_logs/"):
+        ckpts = glob(fulldir+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
+        if len(ckpts): 
+            epoch = int(ckpts[0][ckpts[0].find("=")+1:ckpts[0].find("-step")])
+            if epoch > max_epoch:
+                lightning_version_to_use = lightning_version
+                max_epoch = epoch
+                ckpt_path = ckpts[0]
+    if lightning_version_to_use: print("Using lightning_version", lightning_version_to_use, "with epoch", max_epoch, "restoring from checkpoint at path", ckpt_path)
+
+# Make a CSV Logger with the specific version
+if "logger" in config:
+    if config["logger"] == "csv":
+        experiment_logger = CSVLogger(save_dir=fulldir)
+    else:
+        experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir, group=experiment_name, \
+                            tags=config["wandb"]["tags"] if "wandb" in config else [], \
+                                project=config["wandb"]["project"] if "wandb" in config else "scaling_logs", \
+                                config=config, id=sha1(fulldir.encode("utf-8")).hexdigest()[:8])
+else:
+    experiment_logger = CSVLogger(save_dir=fulldir)
+logger = [experiment_logger]
+
+early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=50, verbose=True, mode="min")
+callbacks=[early_stop_callback]
+callbacks = []
 
 estimator = LagGPTFlowsEstimator(
     prediction_length=meta.prediction_length,
@@ -119,14 +153,18 @@ estimator = LagGPTFlowsEstimator(
     aug_prob = config["gpt"]["aug_prob"],
     aug_rate = config["gpt"]["aug_rate"],
     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
-    trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], log_every_n_steps = config["metrics"]["num_steps"], val_check_interval=config["metrics"]["num_steps"], accelerator="gpu", precision="32", logger=experiment_logger, devices=[config["CUDA"]["device_id"]]),
+    trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
+                        precision=args.precision, logger=logger, devices=[config["CUDA"]["device_id"]], \
+                        callbacks=callbacks),
+    ckpt_path=ckpt_path
 )
 
 
 predictor = estimator.train(
     training_data=dataset, 
     validation_data=val_dataset,
-    shuffle_buffer_length=1000
+    shuffle_buffer_length=1000,
+    ckpt_path=ckpt_path
 )
 
 if config["metrics"]["logger"]=="csv":
