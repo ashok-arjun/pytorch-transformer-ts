@@ -125,13 +125,15 @@ elif "lightning_logs" in os.listdir(fulldir):
     if lightning_version_to_use: print("Using lightning_version", lightning_version_to_use, "with epoch", max_epoch, "restoring from checkpoint at path", ckpt_path)
 
 # Make a CSV Logger with the specific version
-if "logger" in config:
-    if config["logger"] == "csv":
+if "metrics" in config:
+    if config["metrics"]["logger"] == "csv":
         experiment_logger = CSVLogger(save_dir=fulldir)
     else:
+        tags = config["wandb"]["tags"] if "wandb" in config and "tags" in config["wandb"] else []
+        if type(tags) != list: tags = [tags]
         experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir, group=experiment_name, \
-                                tags=config["wandb"]["tags"] if "wandb" in config else [], \
-                                    project=config["wandb"]["tags"] if "wandb" in config else "scaling_logs", \
+                            tags=tags, \
+                                project=config["wandb"]["project"] if "wandb" in config and "project" in config["wandb"] else "scaling_logs", \
                                     config=config, id=sha1(fulldir.encode("utf-8")).hexdigest()[:8])
 else:
     experiment_logger = CSVLogger(save_dir=fulldir)
@@ -148,7 +150,7 @@ callbacks=[early_stop_callback]
 # callbacks = [] # For data scaling
 
 estimator = LagGPTEstimator(
-    prediction_length=meta.prediction_length,
+    prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
     context_length=config["gpt"]["context_length"], # block_size: int = 2048 
     batch_size=config["gpt"]["batch_size"], # 4
     n_layer=config["gpt"]["n_layer"],
