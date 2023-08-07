@@ -10,7 +10,7 @@ from gluonts.evaluation import make_evaluation_predictions, Evaluator
 from gluonts.dataset.repository.datasets import get_dataset
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, EarlyStopping, LearningRateFinder, LearningRateMonitor
 
 from estimator import LagGPTFlowsEstimator
 from pathlib import Path
@@ -18,6 +18,8 @@ import pathlib
 
 import argparse
 import yaml
+import gc
+import torch
 
 parser = argparse.ArgumentParser()
 parser.add_argument("filename", help = "YAML config file.")
@@ -25,6 +27,15 @@ parser.add_argument("--suffix", default="", type=str, required=True, help="This 
 parser.add_argument("--seed", default=42, type=int)
 parser.add_argument("--dataset_path", default="/home/toolkit/datasets", type=str)
 parser.add_argument("--precision", default="32", type=str, choices=["32", "16", "bf16-mixed"])
+
+# For scaling, I am putting all parameters here to save time in creating the yaml files
+parser.add_argument("--layers", default=8, type=int)
+parser.add_argument("--heads", default=4, type=int)
+parser.add_argument("--dims_per_head", default=16, type=int)
+
+# Also the batch size is by default set to a high value and found by the highest possible size at which 1 epoch runs
+parser.add_argument("--batch_size", default=128, type=int)
+
 args = parser.parse_args()
 
 
@@ -107,15 +118,18 @@ experiment_name = ("data-scaling-weighted-"+str(config["gpt"]["aug_prob"])+"_"+a
 fulldir = os.path.join(pathlib.Path(__file__).parent.resolve(), "scaling-logs", experiment_name, str(args.seed)) # Always creates the experiment directory inside "lag-gpt-flows"
 os.makedirs(fulldir, exist_ok=True)
 
+fulldir_experiments = os.path.join(fulldir, "experiments")
+os.makedirs(fulldir_experiments, exist_ok=True)
+
 # Code to retrieve the version with the highest #epoch stored and restore it incl directory and its checkpoint
 lightning_version_to_use, ckpt_path = None, None
 max_epoch = -1
-if "scaling_logs" in os.listdir(fulldir):
-    ckpts = glob(fulldir+"/scaling_logs/" + sha1(fulldir.encode("utf-8")).hexdigest()[:8] + "/checkpoints/*.ckpt")
+if "scaling_logs" in os.listdir(fulldir_experiments):
+    ckpts = glob(fulldir_experiments+"/scaling_logs/" + sha1(fulldir_experiments.encode("utf-8")).hexdigest()[:8] + "/checkpoints/*.ckpt")
     if len(ckpts): ckpt_path = ckpts[0]
-elif "lightning_logs" in os.listdir(fulldir):
-    for lightning_version in os.listdir(fulldir+"/lightning_logs/"):
-        ckpts = glob(fulldir+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
+elif "lightning_logs" in os.listdir(fulldir_experiments):
+    for lightning_version in os.listdir(fulldir_experiments+"/lightning_logs/"):
+        ckpts = glob(fulldir_experiments+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
         if len(ckpts): 
             epoch = int(ckpts[0][ckpts[0].find("=")+1:ckpts[0].find("-step")])
             if epoch > max_epoch:
@@ -127,29 +141,95 @@ elif "lightning_logs" in os.listdir(fulldir):
 # Make a CSV Logger with the specific version
 if "metrics" in config:
     if config["metrics"]["logger"] == "csv":
-        experiment_logger = CSVLogger(save_dir=fulldir)
+        experiment_logger = CSVLogger(save_dir=fulldir_experiments)
     else:
         tags = config["wandb"]["tags"] if "wandb" in config and "tags" in config["wandb"] else []
         if type(tags) != list: tags = [tags]
-        experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir, group=experiment_name, \
-                            tags=tags, \
+        experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir_experiments, group=experiment_name, \
+                            tags=tags, entity="arjun-team", \
                                 project=config["wandb"]["project"] if "wandb" in config and "project" in config["wandb"] else "scaling_logs", \
-                                config=config, id=sha1(fulldir.encode("utf-8")).hexdigest()[:8])
+                                config=config, id=sha1(fulldir_experiments.encode("utf-8")).hexdigest()[:8])
 else:
-    experiment_logger = CSVLogger(save_dir=fulldir)
+    experiment_logger = CSVLogger(save_dir=fulldir_experiments)
 logger = [experiment_logger]
 
+lr_monitor = LearningRateMonitor(logging_interval="epoch")
+lr_callback = LearningRateFinder(min_lr=1e-4, max_lr=1e-1, num_training_steps=100)
 early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=50, verbose=True, mode="min")
-callbacks=[early_stop_callback]
+callbacks=[lr_monitor, lr_callback, early_stop_callback]
 # callbacks = [] # For data scaling
+
+# Do a batch size search first without any logger
+print("DOING BATCH SIZE SEARCH...")
+batch_size = args.batch_size
+
+fulldir_batchsize_search = os.path.join(fulldir, "batch-size-search")
+os.makedirs(fulldir_batchsize_search, exist_ok=True)
+
+while True:
+    print("Trying batch size:", batch_size)
+    batch_size_search_dir = os.path.join(fulldir_batchsize_search, "batch-size-search-" + str(batch_size))
+    os.makedirs(batch_size_search_dir, exist_ok=True)
+
+    bsz_logger = None
+    try:
+        estimator = LagGPTFlowsEstimator(
+            prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
+            context_length=config["gpt"]["context_length"], # block_size: int = 2048 
+            batch_size=batch_size, # 4
+            n_layer=args.layers,
+            n_head=args.heads,
+            n_embd=args.dims_per_head*args.heads, # 4096
+            dsf_marginal=config["gpt"]["dsf_marginal"],
+            scaling=config["gpt"]["scaling"],
+            aug_prob = config["gpt"]["aug_prob"],
+            aug_rate = config["gpt"]["aug_rate"],
+            num_batches_per_epoch= 10,
+            trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
+                                precision=args.precision, logger=False, devices=[config["CUDA"]["device_id"]], \
+                                callbacks=[], default_root_dir=batch_size_search_dir),
+            ckpt_path=None
+        )
+
+        predictor = estimator.train(
+            training_data=dataset, 
+            validation_data=val_dataset,
+            shuffle_buffer_length=1000,
+            ckpt_path=None
+        )
+
+        print("Succesfully found batch size:", batch_size)
+        break
+    except RuntimeError as e:
+        if "out of memory" in str(e):
+            gc.collect()
+            torch.cuda.empty_cache()
+            if batch_size == 1: 
+                print("Batch is already at the minimum. Cannot reduce further. Exiting...")
+                exit(0)
+            else:
+                print("Caught OutOfMemoryError. Reducing batch size...")
+                batch_size //= 2
+                continue
+        else:
+            print(e)
+            exit(1)
+            
+if batch_size != 1:
+    batch_size //= 2
+    print("Using batch size:", batch_size)
+
+gc.collect()
+torch.cuda.empty_cache()
+print("Training...")
 
 estimator = LagGPTFlowsEstimator(
     prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
     context_length=config["gpt"]["context_length"], # block_size: int = 2048 
-    batch_size=config["gpt"]["batch_size"], # 4
-    n_layer=config["gpt"]["n_layer"],
-    n_head=config["gpt"]["n_head"],
-    n_embd=config["gpt"]["n_embd"], # 4096
+    batch_size=batch_size, # 4
+    n_layer=args.layers,
+    n_head=args.heads,
+    n_embd=args.dims_per_head*args.heads, # 4096
     dsf_marginal=config["gpt"]["dsf_marginal"],
     scaling=config["gpt"]["scaling"],
     aug_prob = config["gpt"]["aug_prob"],
@@ -157,10 +237,9 @@ estimator = LagGPTFlowsEstimator(
     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
     trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
                         precision=args.precision, logger=logger, devices=[config["CUDA"]["device_id"]], \
-                        callbacks=callbacks),
+                        callbacks=callbacks, default_root_dir=fulldir_experiments),
     ckpt_path=ckpt_path
 )
-
 
 predictor = estimator.train(
     training_data=dataset, 
@@ -169,23 +248,4 @@ predictor = estimator.train(
     ckpt_path=ckpt_path
 )
 
-if config["metrics"]["logger"]=="csv":
-    loss_df = pd.read_csv(fulldir+"/lightning_logs/version_"+str(experiment_version)+"/metrics.csv")
-    train_loss = loss_df.dropna(subset=["train_loss"])
-    val_loss = loss_df.dropna(subset=["val_loss"])
 
-    fig, ax = plt.subplots()
-    ax.plot(train_loss["step"], train_loss["train_loss"])
-    ax.set_xscale("log")
-    ax.set_ylabel("Training Loss")
-    ax.set_xlabel("Steps")
-    fig.savefig(fulldir+"/lightning_logs/version_"+str(experiment_version)+"/train_loss.png") 
-    plt.close(fig)
-
-    fig, ax = plt.subplots()
-    ax.plot(val_loss["step"], val_loss["val_loss"])
-    ax.set_xscale("log")
-    ax.set_ylabel("Validation Loss")
-    ax.set_xlabel("Steps")
-    fig.savefig(fulldir+"/lightning_logs/version_"+str(experiment_version)+"/val_loss.png") 
-    plt.close(fig)
