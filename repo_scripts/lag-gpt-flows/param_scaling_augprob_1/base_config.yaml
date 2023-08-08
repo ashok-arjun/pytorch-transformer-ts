@@ -1,0 +1,25 @@
+dataset:
+  val: m4_weekly
+  test: traffic
+  weighted: 0
+gpt:
+  max_epochs: 10000
+  context_length: 1024
+  n_layer: 8
+  n_embd: 64
+  n_head: 4
+  scaling: std
+  lr: 0.0001
+  weight_decay: 0.00000001
+  aug_prob: 1.0
+  aug_rate: 0.1
+  num_parallel_samples: 100
+  batch_size: 1
+  batches_per_epoch: 100
+  dsf_marginal:
+    mlp_layers: 4
+    mlp_dim: 256
+    flow_layers: 4
+    flow_hid_dim: 256
+CUDA:
+  device_id: 0
