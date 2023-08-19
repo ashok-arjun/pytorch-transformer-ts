@@ -11,6 +11,8 @@ from gluonts.itertools import prod
 from module import LagGPTFlowsModel
 from aug import freq_mask, freq_mix
 
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
 
 class LagGPTFlowsLightningModule(pl.LightningModule):
     """
@@ -39,18 +41,24 @@ class LagGPTFlowsLightningModule(pl.LightningModule):
         model_kwargs: dict,
         loss: DistributionLoss = NegativeLogLikelihood(),
         lr: float = 1e-3,
+        lrs: bool = False,
+        lrs_patience: int = 10,
         weight_decay: float = 1e-8,
         aug_prob: float = 0.1,
         aug_rate: float = 0.1,
+        aug_rate_choices = None
     ):
         super().__init__()
         self.save_hyperparameters()
         self.model = LagGPTFlowsModel(**self.hparams.model_kwargs)
         self.loss = self.hparams.loss
         self.lr = self.hparams.lr
+        self.lrs = lrs
+        self.lrs_patience = self.hparams.lrs_patience
         self.weight_decay = self.hparams.weight_decay
         self.aug_prob = self.hparams.aug_prob
         self.aug_rate = self.hparams.aug_rate
+        self.aug_rate_choices = self.hparams.aug_rate_choices
 
     # mean prediction and then sample
     def forward(self, *args, **kwargs):
@@ -134,13 +142,17 @@ class LagGPTFlowsLightningModule(pl.LightningModule):
         Execute training step.
         """
         if random.random() < self.aug_prob:
+            if self.aug_rate_choices != None:
+                aug_rate = random.choice(self.aug_rate_choices)
+            else:
+                aug_rate = self.aug_rate
             if random.random() < 0.5:
                 batch["past_target"], batch["future_target"] = freq_mask(
-                    batch["past_target"], batch["future_target"], rate=self.aug_rate
+                    batch["past_target"], batch["future_target"], rate=aug_rate
                 )
             else:
                 batch["past_target"], batch["future_target"] = freq_mix(
-                    batch["past_target"], batch["future_target"], rate=self.aug_rate
+                    batch["past_target"], batch["future_target"], rate=aug_rate
                 )
 
         train_loss = self._compute_loss(batch)
@@ -174,8 +186,21 @@ class LagGPTFlowsLightningModule(pl.LightningModule):
         """
         Returns the optimizer to use.
         """
-        return torch.optim.Adam(
+        optimizer = torch.optim.Adam(
             self.model.parameters(),
             lr=self.lr,
             weight_decay=self.weight_decay,
         )
+        if self.lrs:
+            print("Using a LR scheduler with patience:", self.lrs_patience)
+            scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=self.lrs_patience, verbose=True)
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "monitor": "val_loss",
+                    "frequency": 1
+                },
+            }
+        else:
+            return optimizer

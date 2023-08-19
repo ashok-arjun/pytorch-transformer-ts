@@ -20,7 +20,6 @@ import argparse
 import yaml
 import gc
 import torch
-import wandb
 
 parser = argparse.ArgumentParser()
 parser.add_argument("filename", help = "YAML config file.")
@@ -36,11 +35,6 @@ parser.add_argument("--dims_per_head", default=16, type=int)
 
 # Also the batch size is by default set to a high value and found by the highest possible size at which 1 epoch runs
 parser.add_argument("--batch_size", default=128, type=int)
-parser.add_argument("--gradient_accumulation_steps", default=1, type=int)
-parser.add_argument("--early_stopping_patience", default=50, type=int)
-
-# Only evaluation on traffic
-parser.add_argument("--test_only", action="store_true")
 
 args = parser.parse_args()
 
@@ -121,7 +115,7 @@ meta = get_dataset(config["dataset"]["val"], path=dataset_path).metadata
 
 # Make the experiment_name
 experiment_name = ("data-scaling-weighted-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix)
-fulldir = os.path.join(pathlib.Path(__file__).parent.resolve(), "scaling-logs", experiment_name, str(args.seed)) # Always creates the experiment directory inside "lag-gpt-flows"
+fulldir = os.path.join(pathlib.Path(__file__).parent.resolve(), "scaling-logs-parameter-logging", experiment_name, str(args.seed)) # Always creates the experiment directory inside "lag-gpt-flows"
 os.makedirs(fulldir, exist_ok=True)
 
 fulldir_experiments = os.path.join(fulldir, "experiments")
@@ -154,156 +148,104 @@ if "metrics" in config:
         experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir_experiments, group=experiment_name, \
                             tags=tags, entity="arjun-team", \
                                 project=config["wandb"]["project"] if "wandb" in config and "project" in config["wandb"] else "scaling_logs", \
-                                config=config, id=sha1(fulldir_experiments.encode("utf-8")).hexdigest()[:8], allow_val_change=True)
+                                config=config, id=sha1(fulldir_experiments.encode("utf-8")).hexdigest()[:8])
 else:
     experiment_logger = CSVLogger(save_dir=fulldir_experiments)
 logger = [experiment_logger]
 
 lr_monitor = LearningRateMonitor(logging_interval="epoch")
-early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=int(args.early_stopping_patience), verbose=True, mode="min")
-lr_finder = LearningRateFinder(min_lr=1e-6, max_lr=1e-1, num_training_steps=100, early_stop_threshold=None)
-
-if not ckpt_path:
-    callbacks=[lr_finder, lr_monitor, early_stop_callback]
-else:
-    callbacks=[lr_monitor, early_stop_callback]
-
+lr_callback = LearningRateFinder(min_lr=1e-4, max_lr=1e-1, num_training_steps=100)
+early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=50, verbose=True, mode="min")
+callbacks=[lr_monitor, lr_callback, early_stop_callback]
 # callbacks = [] # For data scaling
 
 # Do a batch size search first without any logger
 print("DOING BATCH SIZE SEARCH...")
 batch_size = args.batch_size
 
-fulldir_batchsize_search = os.path.join(fulldir, "batch-size-search")
-os.makedirs(fulldir_batchsize_search, exist_ok=True)
+# fulldir_batchsize_search = os.path.join(fulldir, "batch-size-search")
+# os.makedirs(fulldir_batchsize_search, exist_ok=True)
 
-while True:
-    print("Trying batch size:", batch_size)
-    batch_size_search_dir = os.path.join(fulldir_batchsize_search, "batch-size-search-" + str(batch_size))
-    os.makedirs(batch_size_search_dir, exist_ok=True)
+# while True:
+#     print("Trying batch size:", batch_size)
+#     batch_size_search_dir = os.path.join(fulldir_batchsize_search, "batch-size-search-" + str(batch_size))
+#     os.makedirs(batch_size_search_dir, exist_ok=True)
 
-    bsz_logger = None
-    try:
-        estimator = LagGPTFlowsEstimator(
-            prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
-            context_length=config["gpt"]["context_length"], # block_size: int = 2048 
-            batch_size=batch_size, # 4
-            n_layer=args.layers,
-            n_head=args.heads,
-            n_embd=args.dims_per_head*args.heads, # 4096
-            dsf_marginal=config["gpt"]["dsf_marginal"],
-            scaling=config["gpt"]["scaling"],
-            lr=config["gpt"]["lr"],
-            lrs=config["gpt"]["lrs"],
-            lrs_patience=int(config["gpt"]["lrs_patience"]),
-            aug_prob = config["gpt"]["aug_prob"],
-            aug_rate = config["gpt"]["aug_rate"],
-            aug_rate_choices = config["gpt"]["aug_rate_choices"] if "aug_rate_choices" in config["gpt"] else None,
-            num_batches_per_epoch= 10,
-            trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
-                                precision=args.precision, logger=False, devices=[config["CUDA"]["device_id"]], \
-                                callbacks=[], default_root_dir=batch_size_search_dir, accumulate_grad_batches=args.gradient_accumulation_steps),
-            ckpt_path=None
-        )
+#     bsz_logger = None
+#     try:
+#         estimator = LagGPTFlowsEstimator(
+#             prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
+#             context_length=config["gpt"]["context_length"], # block_size: int = 2048 
+#             batch_size=batch_size, # 4
+#             n_layer=args.layers,
+#             n_head=args.heads,
+#             n_embd=args.dims_per_head*args.heads, # 4096
+#             dsf_marginal=config["gpt"]["dsf_marginal"],
+#             scaling=config["gpt"]["scaling"],
+#             aug_prob = config["gpt"]["aug_prob"],
+#             aug_rate = config["gpt"]["aug_rate"],
+#             num_batches_per_epoch= 10,
+#             trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
+#                                 precision=args.precision, logger=False, devices=[config["CUDA"]["device_id"]], \
+#                                 callbacks=[], default_root_dir=batch_size_search_dir),
+#             ckpt_path=None
+#         )
 
-        predictor = estimator.train(
-            training_data=dataset, 
-            validation_data=val_dataset,
-            shuffle_buffer_length=1000,
-            ckpt_path=None
-        )
+#         predictor = estimator.train(
+#             training_data=dataset, 
+#             validation_data=val_dataset,
+#             shuffle_buffer_length=1000,
+#             ckpt_path=None
+#         )
 
-        print("Succesfully found batch size:", batch_size)
-        break
-    except RuntimeError as e:
-        if "out of memory" in str(e):
-            gc.collect()
-            torch.cuda.empty_cache()
-            if batch_size == 1: 
-                print("Batch is already at the minimum. Cannot reduce further. Exiting...")
-                exit(0)
-            else:
-                print("Caught OutOfMemoryError. Reducing batch size...")
-                batch_size //= 2
-                continue
-        else:
-            print(e)
-            exit(1)
-            
-if batch_size != 1:
-    batch_size //= 2
-    print("Using batch size:", batch_size)
-if type(logger[0]) == WandbLogger: 
-    wandb.config.update({"batch_size": batch_size}, allow_val_change=True)
-    wandb.config.update({"gradient_accumulation_steps": args.gradient_accumulation_steps}, allow_val_change=True)
+#         print("Succesfully found batch size:", batch_size)
+#         break
+#     except RuntimeError as e:
+#         if "out of memory" in str(e):
+#             gc.collect()
+#             torch.cuda.empty_cache()
+#             if batch_size == 1: 
+#                 print("Batch is already at the minimum. Cannot reduce further. Exiting...")
+#                 exit(0)
+#             else:
+#                 print("Caught OutOfMemoryError. Reducing batch size...")
+#                 batch_size //= 2
+#                 continue
 
-gc.collect()
-torch.cuda.empty_cache()
-print("Training...")
+# if batch_size != 1:
+#     batch_size //= 2
+#     print("Using batch size:", batch_size)
 
-estimator = LagGPTFlowsEstimator(
-    prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
-    context_length=config["gpt"]["context_length"], # block_size: int = 2048 
-    batch_size=batch_size, # 4
-    n_layer=args.layers,
-    n_head=args.heads,
-    n_embd=args.dims_per_head*args.heads, # 4096
-    dsf_marginal=config["gpt"]["dsf_marginal"],
-    scaling=config["gpt"]["scaling"],
-    lr=config["gpt"]["lr"],
-    lrs=config["gpt"]["lrs"],
-    lrs_patience=int(config["gpt"]["lrs_patience"]),
-    aug_prob = config["gpt"]["aug_prob"],
-    aug_rate = config["gpt"]["aug_rate"],
-    aug_rate_choices = config["gpt"]["aug_rate_choices"] if "aug_rate_choices" in config["gpt"] else None,
-    num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
-    trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
-                        precision=args.precision, logger=logger, devices=[config["CUDA"]["device_id"]], \
-                        callbacks=callbacks, default_root_dir=fulldir_experiments, accumulate_grad_batches=args.gradient_accumulation_steps),
-    ckpt_path=ckpt_path
-)
+# gc.collect()
+# torch.cuda.empty_cache()
+# print("Training...")
 
-num_parameters = sum(p.numel() for p in estimator.create_lightning_module().parameters())
-if type(logger[0]) == WandbLogger: wandb.config.update({"num_parameters": num_parameters})
+parameters = []
 
-predictor = estimator.train(
-    training_data=dataset, 
-    validation_data=val_dataset,
-    shuffle_buffer_length=1000,
-    ckpt_path=ckpt_path
-)
+for args.layers in [2,4]:
+    args.dims_per_head = args.layers * 2
 
+    estimator = LagGPTFlowsEstimator(
+        prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
+        context_length=config["gpt"]["context_length"], # block_size: int = 2048 
+        batch_size=batch_size, # 4
+        n_layer=args.layers,
+        n_head=args.heads,
+        n_embd=args.dims_per_head*args.heads, # 4096
+        dsf_marginal=config["gpt"]["dsf_marginal"],
+        scaling=config["gpt"]["scaling"],
+        aug_prob = config["gpt"]["aug_prob"],
+        aug_rate = config["gpt"]["aug_rate"],
+        num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
+        trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
+                            precision=args.precision, logger=logger, devices=[config["CUDA"]["device_id"]], \
+                            callbacks=callbacks, default_root_dir=fulldir_experiments),
+        ckpt_path=ckpt_path
+    )
 
-# Perform likelihood evaluation on the traffic dataset
-test_dataset = get_dataset(config["dataset"]["test"], path=dataset_path).test
-test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
-estimator = LagGPTFlowsEstimator(
-    prediction_length=test_meta.prediction_length,
-    context_length=config["gpt"]["context_length"], # block_size: int = 2048 
-    batch_size=batch_size, # 4
-    n_layer=args.layers,
-    n_head=args.heads,
-    n_embd=args.dims_per_head*args.heads, # 4096
-    dsf_marginal=config["gpt"]["dsf_marginal"],
-    scaling=config["gpt"]["scaling"],
-    lr=config["gpt"]["lr"],
-    lrs=config["gpt"]["lrs"],
-    lrs_patience=int(config["gpt"]["lrs_patience"]),
-    aug_prob = config["gpt"]["aug_prob"],
-    aug_rate = config["gpt"]["aug_rate"],
-    aug_rate_choices = config["gpt"]["aug_rate_choices"] if "aug_rate_choices" in config["gpt"] else None,
-    num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
-    trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
-                        precision=args.precision, logger=None, devices=[config["CUDA"]["device_id"]], \
-                        callbacks=callbacks, default_root_dir=fulldir_experiments, accumulate_grad_batches=args.gradient_accumulation_steps)
-)
+    num_parameters = sum(p.numel() for p in estimator.create_lightning_module().parameters())
+    # print(f"Number of parameters: {num_parameters}")
 
-validation_metrics = estimator.validate(
-    validation_data=test_dataset,
-    ckpt_path=ckpt_path,
-    from_predictor=predictor
-)
+    parameters.append(num_parameters)
 
-wandb.log({"traffic/val_loss_new": validation_metrics[0]["val_loss"]})
-
-wandb.finish()
+print(list(parameters))

@@ -1,6 +1,7 @@
 from typing import Optional, Iterable, Dict, Any
 
 import torch
+import logging
 import pytorch_lightning as pl
 
 from gluonts.core.component import validated
@@ -21,9 +22,14 @@ from gluonts.transform import (
     InstanceSampler,
     InstanceSplitter,
 )
-from gluonts.torch.model.estimator import PyTorchLightningEstimator
+from gluonts.torch.model.estimator import PyTorchLightningEstimator, TrainOutput
 from gluonts.torch.model.predictor import PyTorchPredictor
 from gluonts.torch.distributions import DistributionOutput, StudentTOutput
+from gluonts.env import env
+
+from gluonts.itertools import Cached
+
+logger = logging.getLogger(__name__)
 
 from lightning_module import LagGPTFlowsLightningModule
 
@@ -84,10 +90,13 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
         n_head: int = 4,
         dsf_marginal: Dict[str, Any] = {},
         scaling: Optional[str] = "mean",
-        lr: float = 1e-3,
+        lr: float = 1e-4,
+        lrs: bool = False,
+        lrs_patience: int = 10,
         weight_decay: float = 1e-8,
         aug_prob: float = 0.1,
         aug_rate: float = 0.1,
+        aug_rate_choices = None,
         loss: DistributionLoss = NegativeLogLikelihood(),
         num_parallel_samples: int = 100,
         batch_size: int = 32,
@@ -113,6 +122,8 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
         self.dsf_marginal = dsf_marginal
 
         self.lr = lr
+        self.lrs = lrs
+        self.lrs_patience = lrs_patience
         self.weight_decay = weight_decay
         self.num_parallel_samples = num_parallel_samples
         self.loss = loss
@@ -128,6 +139,7 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
 
         self.aug_prob = aug_prob
         self.aug_rate = aug_rate
+        self.aug_rate_choices = aug_rate_choices
 
         self.ckpt_path = ckpt_path
 
@@ -170,18 +182,24 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
                 checkpoint_path=self.ckpt_path,
                 loss=self.loss,
                 lr=self.lr,
+                lrs=self.lrs,
+                lrs_patience=self.lrs_patience,
                 weight_decay=self.weight_decay,
                 aug_prob=self.aug_prob,
                 aug_rate=self.aug_rate,
+                aug_rate_choices=self.aug_rate_choices,
                 model_kwargs=model_kwargs,
             )
         else:
             return LagGPTFlowsLightningModule(
                 loss=self.loss,
                 lr=self.lr,
+                lrs=self.lrs,
+                lrs_patience=self.lrs_patience,
                 weight_decay=self.weight_decay,
                 aug_prob=self.aug_prob,
                 aug_rate=self.aug_rate,
+                aug_rate_choices=self.aug_rate_choices,
                 model_kwargs=model_kwargs,
             )
 
@@ -256,4 +274,65 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
             batch_size=self.batch_size,
             prediction_length=self.prediction_length,
             device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        )
+    
+    def validate_model(
+        self,
+        validation_data: Optional[Dataset] = None,
+        from_predictor: Optional[PyTorchPredictor] = None,
+        cache_data: bool = False,
+        ckpt_path: Optional[str] = None,
+        **kwargs,
+    ):
+        transformation = self.create_transformation()
+
+        training_network = self.create_lightning_module()
+
+        validation_data_loader = None
+
+        if validation_data is not None:
+            with env._let(max_idle_transforms=max(len(validation_data), 100)):
+                transformed_validation_data = transformation.apply(
+                    validation_data, is_train=True
+                )
+                if cache_data:
+                    transformed_validation_data = Cached(
+                        transformed_validation_data
+                    )
+
+                validation_data_loader = self.create_validation_data_loader(
+                    transformed_validation_data,
+                    training_network,
+                )
+
+        if from_predictor is not None:
+            training_network.load_state_dict(
+                from_predictor.network.state_dict()
+            )
+
+        trainer_kwargs = {**self.trainer_kwargs}
+        trainer = pl.Trainer(**trainer_kwargs)
+
+        validation_metrics = trainer.validate(
+            model=training_network,
+            dataloaders=validation_data_loader,
+            ckpt_path=ckpt_path,
+            verbose=True
+        )
+
+        return validation_metrics
+    
+    def validate(
+        self,
+        validation_data: Optional[Dataset] = None,
+        cache_data: bool = False,
+        ckpt_path: Optional[str] = None,
+        from_predictor=None,
+        **kwargs,
+    ) -> PyTorchPredictor:
+        return self.validate_model(
+            validation_data,
+            cache_data=cache_data,
+            ckpt_path=ckpt_path,
+            from_predictor=from_predictor
         )

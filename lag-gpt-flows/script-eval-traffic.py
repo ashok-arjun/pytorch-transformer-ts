@@ -11,7 +11,9 @@ from gluonts.dataset.repository.datasets import get_dataset
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, EarlyStopping, LearningRateFinder, LearningRateMonitor
-
+from gluonts.transform import (
+    ValidationSplitSampler,
+)
 from estimator import LagGPTFlowsEstimator
 from pathlib import Path
 import pathlib
@@ -38,9 +40,6 @@ parser.add_argument("--dims_per_head", default=16, type=int)
 parser.add_argument("--batch_size", default=128, type=int)
 parser.add_argument("--gradient_accumulation_steps", default=1, type=int)
 parser.add_argument("--early_stopping_patience", default=50, type=int)
-
-# Only evaluation on traffic
-parser.add_argument("--test_only", action="store_true")
 
 args = parser.parse_args()
 
@@ -161,13 +160,7 @@ logger = [experiment_logger]
 
 lr_monitor = LearningRateMonitor(logging_interval="epoch")
 early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=int(args.early_stopping_patience), verbose=True, mode="min")
-lr_finder = LearningRateFinder(min_lr=1e-6, max_lr=1e-1, num_training_steps=100, early_stop_threshold=None)
-
-if not ckpt_path:
-    callbacks=[lr_finder, lr_monitor, early_stop_callback]
-else:
-    callbacks=[lr_monitor, early_stop_callback]
-
+callbacks=[lr_monitor, early_stop_callback]
 # callbacks = [] # For data scaling
 
 # Do a batch size search first without any logger
@@ -198,7 +191,6 @@ while True:
             lrs_patience=int(config["gpt"]["lrs_patience"]),
             aug_prob = config["gpt"]["aug_prob"],
             aug_rate = config["gpt"]["aug_rate"],
-            aug_rate_choices = config["gpt"]["aug_rate_choices"] if "aug_rate_choices" in config["gpt"] else None,
             num_batches_per_epoch= 10,
             trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
                                 precision=args.precision, logger=False, devices=[config["CUDA"]["device_id"]], \
@@ -234,8 +226,8 @@ if batch_size != 1:
     batch_size //= 2
     print("Using batch size:", batch_size)
 if type(logger[0]) == WandbLogger: 
-    wandb.config.update({"batch_size": batch_size}, allow_val_change=True)
-    wandb.config.update({"gradient_accumulation_steps": args.gradient_accumulation_steps}, allow_val_change=True)
+    wandb.config.update({"batch_size": batch_size})
+    wandb.config.update({"gradient_accumulation_steps": args.gradient_accumulation_steps})
 
 gc.collect()
 torch.cuda.empty_cache()
@@ -255,7 +247,6 @@ estimator = LagGPTFlowsEstimator(
     lrs_patience=int(config["gpt"]["lrs_patience"]),
     aug_prob = config["gpt"]["aug_prob"],
     aug_rate = config["gpt"]["aug_rate"],
-    aug_rate_choices = config["gpt"]["aug_rate_choices"] if "aug_rate_choices" in config["gpt"] else None,
     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
     trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
                         precision=args.precision, logger=logger, devices=[config["CUDA"]["device_id"]], \
@@ -273,12 +264,12 @@ predictor = estimator.train(
     ckpt_path=ckpt_path
 )
 
-
 # Perform likelihood evaluation on the traffic dataset
+
 test_dataset = get_dataset(config["dataset"]["test"], path=dataset_path).test
 test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
 estimator = LagGPTFlowsEstimator(
-    prediction_length=test_meta.prediction_length,
+    prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else test_meta.prediction_length,
     context_length=config["gpt"]["context_length"], # block_size: int = 2048 
     batch_size=batch_size, # 4
     n_layer=args.layers,
@@ -291,7 +282,6 @@ estimator = LagGPTFlowsEstimator(
     lrs_patience=int(config["gpt"]["lrs_patience"]),
     aug_prob = config["gpt"]["aug_prob"],
     aug_rate = config["gpt"]["aug_rate"],
-    aug_rate_choices = config["gpt"]["aug_rate_choices"] if "aug_rate_choices" in config["gpt"] else None,
     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
     trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
                         precision=args.precision, logger=None, devices=[config["CUDA"]["device_id"]], \
@@ -304,6 +294,7 @@ validation_metrics = estimator.validate(
     from_predictor=predictor
 )
 
-wandb.log({"traffic/val_loss_new": validation_metrics[0]["val_loss"]})
+# Log the traffic metric to WANDB appropriately
+wandb.log({"traffic/val_loss": validation_metrics[0]["val_loss"]})
 
 wandb.finish()
