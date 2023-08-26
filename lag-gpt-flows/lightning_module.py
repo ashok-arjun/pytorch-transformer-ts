@@ -13,6 +13,7 @@ from aug import freq_mask, freq_mix
 
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
+from pytorch_lightning.utilities import grad_norm
 
 class LagGPTFlowsLightningModule(pl.LightningModule):
     """
@@ -181,6 +182,12 @@ class LagGPTFlowsLightningModule(pl.LightningModule):
             # Log the best metric value
             self.log("best_val_loss", best_val_loss, on_epoch=True, on_step=False, prog_bar=False)
             self.log("wait_count", wait_count, on_epoch=True, on_step=False, prog_bar=False)
+
+    def on_before_optimizer_step(self, optimizer):
+        # Compute the 2-norm for each layer
+        # If using mixed precision, the gradients are already unscaled here
+        norms = grad_norm(self.model, norm_type=2)
+        self.log_dict(norms)
 
     def configure_optimizers(self):
         """
