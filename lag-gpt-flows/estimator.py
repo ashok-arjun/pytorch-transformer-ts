@@ -96,7 +96,7 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
         weight_decay: float = 1e-8,
         aug_prob: float = 0.1,
         aug_rate: float = 0.1,
-        aug_rate_choices = None,
+        aug_range = None,
         loss: DistributionLoss = NegativeLogLikelihood(),
         num_parallel_samples: int = 100,
         batch_size: int = 32,
@@ -139,7 +139,7 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
 
         self.aug_prob = aug_prob
         self.aug_rate = aug_rate
-        self.aug_rate_choices = aug_rate_choices
+        self.aug_range = aug_range
 
         self.ckpt_path = ckpt_path
 
@@ -187,7 +187,7 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
                 weight_decay=self.weight_decay,
                 aug_prob=self.aug_prob,
                 aug_rate=self.aug_rate,
-                aug_rate_choices=self.aug_rate_choices,
+                aug_range=self.aug_range,
                 model_kwargs=model_kwargs,
             )
         else:
@@ -199,7 +199,7 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
                 weight_decay=self.weight_decay,
                 aug_prob=self.aug_prob,
                 aug_rate=self.aug_rate,
-                aug_rate_choices=self.aug_rate_choices,
+                aug_range=self.aug_range,
                 model_kwargs=model_kwargs,
             )
 
