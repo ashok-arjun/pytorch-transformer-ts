@@ -47,7 +47,7 @@ class LagGPTFlowsLightningModule(pl.LightningModule):
         weight_decay: float = 1e-8,
         aug_prob: float = 0.1,
         aug_rate: float = 0.1,
-        aug_rate_choices = None
+        aug_range = None
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -59,7 +59,7 @@ class LagGPTFlowsLightningModule(pl.LightningModule):
         self.weight_decay = self.hparams.weight_decay
         self.aug_prob = self.hparams.aug_prob
         self.aug_rate = self.hparams.aug_rate
-        self.aug_rate_choices = self.hparams.aug_rate_choices
+        self.aug_range = self.hparams.aug_range
 
     # mean prediction and then sample
     def forward(self, *args, **kwargs):
@@ -143,8 +143,8 @@ class LagGPTFlowsLightningModule(pl.LightningModule):
         Execute training step.
         """
         if random.random() < self.aug_prob:
-            if self.aug_rate_choices != None:
-                aug_rate = random.choice(self.aug_rate_choices)
+            if self.aug_range != None:
+                aug_rate = random.uniform(self.aug_range[0], self.aug_range[1])
             else:
                 aug_rate = self.aug_rate
             if random.random() < 0.5:
@@ -183,7 +183,7 @@ class LagGPTFlowsLightningModule(pl.LightningModule):
             self.log("best_val_loss", best_val_loss, on_epoch=True, on_step=False, prog_bar=False)
             self.log("wait_count", wait_count, on_epoch=True, on_step=False, prog_bar=False)
 
-    def on_before_optimizer_step(self, optimizer):
+    def on_before_optimizer_step(self, optimizer, optimizer_idx):
         # Compute the 2-norm for each layer
         # If using mixed precision, the gradients are already unscaled here
         norms = grad_norm(self.model, norm_type=2)
