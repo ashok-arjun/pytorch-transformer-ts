@@ -7,7 +7,7 @@ import argparse
 import os
 from os.path import dirname, abspath
 
-def jsrun_6seeds(name, config, layers=1, dims_per_head=10):
+def jsrun_6seeds(name, config):
     # Modify the script content with the arguments
     script_content = \
 '''
@@ -48,14 +48,14 @@ do
     -c 2 \
     -g 1 \
     -a 1 \
-    /gpfs/alpine/csc499/scratch/arjunashok/conda/scaling_opence_wandb/bin/python lag-gpt-flows/lag-gpt-with-flows-scaling-data-new.py "{3}" \
-    --suffix "{0}" --seed $SEED --layers {1} --dims_per_head {2} &
+    /gpfs/alpine/csc499/scratch/arjunashok/conda/scaling_opence_wandb/bin/python lag-gpt-flows/lag-gpt-with-flows-scaling-data.py "{3}" \
+    --suffix "{0}" &
 done
 
 wait
 '''
 
-    return script_content.format(name, layers, dims_per_head, config)
+    return script_content.format(name, config)
 
 
 if __name__ == "__main__":
@@ -68,20 +68,18 @@ if __name__ == "__main__":
     scripts_dir = os.path.join(directory, "scripts")
     os.makedirs(scripts_dir, exist_ok=True)
 
-    for layers in range(2, 41, 2):
-        dims_per_head = layers*2
-        name = "weighted_param_scaling_wandb_newiter_corr_layers_"+str(layers)+"_dims_per_head_"+str(dims_per_head)
-        config = args.config
+    name = "summit_test_"+str(layers)+"_dims_per_head_"+str(dims_per_head)
+    config = args.config
 
-        assert os.path.isfile(config), "Config Path is not a file"
-        config = os.path.abspath(config)
+    assert os.path.isfile(config), "Config Path is not a file"
+    config = os.path.abspath(config)
 
-        jsrun_string = jsrun_6seeds(name, config, layers=layers, dims_per_head=dims_per_head)
-        script_path = os.path.abspath(scripts_dir) + "/" + name + ".lsf"
+    jsrun_string = jsrun_6seeds(name, config, layers=layers, dims_per_head=dims_per_head)
+    script_path = os.path.abspath(scripts_dir) + "/" + name + ".lsf"
 
-        with open(script_path, "w") as f: 
-            f.write(jsrun_string)
-        print("Submitting", script_path)
-        os.system("bsub " + script_path)
+    with open(script_path, "w") as f: 
+        f.write(jsrun_string)
+    print("Submitting", script_path)
+    os.system("bsub " + script_path)
 
 

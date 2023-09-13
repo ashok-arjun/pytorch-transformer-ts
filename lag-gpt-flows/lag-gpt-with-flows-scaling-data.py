@@ -8,6 +8,7 @@ from hashlib import sha1
 
 from gluonts.evaluation import make_evaluation_predictions, Evaluator
 from gluonts.dataset.repository.datasets import get_dataset
+
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, EarlyStopping, LearningRateFinder, LearningRateMonitor
@@ -62,12 +63,14 @@ parser.add_argument("--precision", default="32", type=str, choices=["32", "16", 
 parser.add_argument("--layers", default=8, type=int)
 parser.add_argument("--heads", default=4, type=int)
 parser.add_argument("--dims_per_head", default=16, type=int)
+parser.add_argument("--context_length", default=1024, type=int)
+parser.add_argument("--lr", default=0.001, type=float)
+parser.add_argument("--weight_decay", default=0, type=float)
 
 # Also the batch size is by default set to a high value and found by the highest possible size at which 1 epoch runs
 parser.add_argument("--batch_size", default=64, type=int)
 parser.add_argument("--gradient_accumulation_steps", default=1, type=int)
 parser.add_argument("--early_stopping_patience", default=50, type=int)
-parser.add_argument("--weight_decay", default=0, type=float)
 
 # Only evaluation on traffic
 parser.add_argument("--test_only", action="store_true")
@@ -232,14 +235,14 @@ while True:
     try:
         estimator = LagGPTFlowsEstimator(
             prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
-            context_length=config["gpt"]["context_length"], # block_size: int = 2048 
+            context_length=args.context_length, # block_size: int = 2048 
             batch_size=batch_size, # 4
             n_layer=args.layers,
             n_head=args.heads,
             n_embd=args.dims_per_head*args.heads, # 4096
             dsf_marginal=config["gpt"]["dsf_marginal"],
             scaling=config["gpt"]["scaling"],
-            lr=config["gpt"]["lr"],
+            lr=args.lr,
             lrs=config["gpt"]["lrs"],
             lrs_patience=int(config["gpt"]["lrs_patience"]),
             weight_decay=args.weight_decay,
@@ -291,14 +294,14 @@ print("Training...")
 
 estimator = LagGPTFlowsEstimator(
     prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
-    context_length=config["gpt"]["context_length"], # block_size: int = 2048 
+    context_length=args.context_length, # block_size: int = 2048 
     batch_size=batch_size, # 4
     n_layer=args.layers,
     n_head=args.heads,
     n_embd=args.dims_per_head*args.heads, # 4096
     dsf_marginal=config["gpt"]["dsf_marginal"],
     scaling=config["gpt"]["scaling"],
-    lr=config["gpt"]["lr"],
+    lr=args.lr,
     lrs=config["gpt"]["lrs"],
     lrs_patience=int(config["gpt"]["lrs_patience"]),
     weight_decay=args.weight_decay,
@@ -309,7 +312,8 @@ estimator = LagGPTFlowsEstimator(
     trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
                         precision=args.precision, logger=logger, devices=[0], \
                         callbacks=callbacks, default_root_dir=fulldir_experiments, accumulate_grad_batches=args.gradient_accumulation_steps),
-    ckpt_path=ckpt_path
+    ckpt_path=ckpt_path,
+    num_parallel_samples=10
 )
 
 num_parameters = sum(p.numel() for p in estimator.create_lightning_module().parameters())
@@ -324,37 +328,73 @@ predictor = estimator.train(
 )
 end_time = time.time()
 
-# Perform likelihood evaluation on the traffic dataset
-test_dataset = get_dataset(config["dataset"]["test"], path=dataset_path).test
-test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
-estimator = LagGPTFlowsEstimator(
-    prediction_length=test_meta.prediction_length,
-    context_length=config["gpt"]["context_length"], # block_size: int = 2048 
-    batch_size=batch_size, # 4
-    n_layer=args.layers,
-    n_head=args.heads,
-    n_embd=args.dims_per_head*args.heads, # 4096
-    dsf_marginal=config["gpt"]["dsf_marginal"],
-    scaling=config["gpt"]["scaling"],
-    lr=config["gpt"]["lr"],
-    lrs=config["gpt"]["lrs"],
-    lrs_patience=int(config["gpt"]["lrs_patience"]),
-    weight_decay=args.weight_decay,
-    aug_prob = config["gpt"]["aug_prob"],
-    aug_rate = config["gpt"]["aug_rate"] if "aug_rate" in config["gpt"] else 0.,
-    aug_range = config["gpt"]["aug_range"] if "aug_range" in config["gpt"] else None,
-    num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
-    trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
-                        precision=args.precision, logger=None, devices=[0], \
-                        callbacks=callbacks, default_root_dir=fulldir_experiments, accumulate_grad_batches=args.gradient_accumulation_steps)
-)
+# # Perform evaluation on the val dataset
+# forecast_it, ts_it = make_evaluation_predictions(dataset=val_dataset,
+#                                              predictor=predictor,
+#                                              num_samples=100)
+# forecasts = list(forecast_it)
+# targets = list(ts_it)
+# evaluator = MultivariateEvaluator(quantiles=(np.arange(20)/20.0)[1:],
+#                                   target_agg_funcs={'sum': np.sum})
+# agg_metric, _ = evaluator(targets, forecasts, num_series=len(dataset_test))
+# agg_metric_modified = {}
+# for key ,value in agg_metric.items():
+#     agg_metric_modified["val/"+key] = value
+# if type(logger[0] == CSVLogger):
+#     logger[0].log_metrics(agg_metric_modified, step=0)
 
-validation_metrics = estimator.validate(
-    validation_data=test_dataset,
-    ckpt_path=ckpt_path,
-    from_predictor=predictor
-)
+# # Perform evaluation on the test dataset with the same length
+# test_dataset = get_dataset(config["dataset"]["test"], path=dataset_path).test
+# test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
+# forecast_it, ts_it = make_evaluation_predictions(dataset=test_dataset,
+#                                              predictor=predictor,
+#                                              num_samples=100)
+# forecasts = list(forecast_it)
+# targets = list(ts_it)
+# evaluator = MultivariateEvaluator(quantiles=(np.arange(20)/20.0)[1:],
+#                                   target_agg_funcs={'sum': np.sum})
+# agg_metric, _ = evaluator(targets, forecasts, num_series=len(dataset_test))
+# agg_metric_modified = {}
+# for key ,value in agg_metric.items():
+#     agg_metric_modified["test-same-len/"+key] = value
+# if type(logger[0] == CSVLogger):
+#     logger[0].log_metrics(agg_metric_modified, step=0)
 
-if type(logger[0]) == WandbLogger:
-    wandb.log({"traffic/val_loss_new": validation_metrics[0]["val_loss"]})
-    wandb.finish()
+
+# # Perform evaluation on the test dataset with its length
+# test_dataset = get_dataset(config["dataset"]["test"], path=dataset_path).test
+# test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
+# estimator = LagGPTFlowsEstimator(
+#     prediction_length=test_meta.prediction_length,
+#     context_length=args.context_length, # block_size: int = 2048 
+#     batch_size=batch_size, # 4
+#     n_layer=args.layers,
+#     n_head=args.heads,
+#     n_embd=args.dims_per_head*args.heads, # 4096
+#     dsf_marginal=config["gpt"]["dsf_marginal"],
+#     scaling=config["gpt"]["scaling"],
+#     lr=args.lr,
+#     lrs=config["gpt"]["lrs"],
+#     lrs_patience=int(config["gpt"]["lrs_patience"]),
+#     weight_decay=args.weight_decay,
+#     aug_prob = config["gpt"]["aug_prob"],
+#     aug_rate = config["gpt"]["aug_rate"] if "aug_rate" in config["gpt"] else 0.,
+#     aug_range = config["gpt"]["aug_range"] if "aug_range" in config["gpt"] else None,
+#     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
+#     trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
+#                         precision=args.precision, logger=None, devices=[0], \
+#                         callbacks=callbacks, default_root_dir=fulldir_experiments, accumulate_grad_batches=args.gradient_accumulation_steps)
+# )
+# forecast_it, ts_it = make_evaluation_predictions(dataset=test_dataset,
+#                                              predictor=predictor,
+#                                              num_samples=100)
+# forecasts = list(forecast_it)
+# targets = list(ts_it)
+# evaluator = MultivariateEvaluator(quantiles=(np.arange(20)/20.0)[1:],
+#                                   target_agg_funcs={'sum': np.sum})
+# agg_metric, _ = evaluator(targets, forecasts, num_series=len(dataset_test))
+# agg_metric_modified = {}
+# for key ,value in agg_metric.items():
+#     agg_metric_modified["test/"+key] = value
+# if type(logger[0] == CSVLogger):
+#     logger[0].log_metrics(agg_metric_modified, step=0)
