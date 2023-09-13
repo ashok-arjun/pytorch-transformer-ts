@@ -4,19 +4,15 @@ dataset:
   weighted: 1
 gpt:
   max_epochs: 10000
-  context_length: 1024
-  n_layer: 8
-  n_embd: 64
-  n_head: 4
   scaling: std
-  lr: 0.001
+  lr: 0.01
   lrs: False
-  lrs_patience: 10
+  lrs_patience: 50
   weight_decay: 0.00000001
   aug_prob: 1.0
-  aug_rate: 0
+  aug_rate: 0.1
   num_parallel_samples: 100
-  batch_size: 1
+  batch_size: 32
   batches_per_epoch: 100
   dsf_marginal:
     mlp_layers: 4
