@@ -123,39 +123,39 @@ dataset_path = Path(args.dataset_path)
 gluonts_ds = [
         get_dataset("airpassengers", path=dataset_path).train,
         get_dataset("australian_electricity_demand", path=dataset_path).train,
-        # get_dataset("car_parts_without_missing", path=dataset_path).train,
-        # get_dataset("cif_2016", path=dataset_path).train,
-        # get_dataset("covid_deaths", path=dataset_path).train,
-        # get_dataset("electricity", path=dataset_path).train,
-        # get_dataset("electricity_weekly", path=dataset_path).train,
-        # get_dataset("exchange_rate", path=dataset_path).train,
-        # get_dataset("fred_md", path=dataset_path).train,
-        # get_dataset("hospital", path=dataset_path).train,
-        # get_dataset("kaggle_web_traffic_weekly", path=dataset_path).train,
-        # get_dataset("kdd_cup_2018_without_missing", path=dataset_path).train,
-        # get_dataset("london_smart_meters_without_missing", path=dataset_path).train,
-        # get_dataset("nn5_daily_with_missing", path=dataset_path).train,
-        # get_dataset("nn5_weekly", path=dataset_path).train,
-        # get_dataset("pedestrian_counts", path=dataset_path).train,
-        # get_dataset("rideshare_without_missing", path=dataset_path).train,
-        # get_dataset("saugeenday", path=dataset_path).train,
-        # get_dataset("solar-energy", path=dataset_path).train,
-        # get_dataset("solar_10_minutes", path=dataset_path).train,
-        # get_dataset("solar_weekly", path=dataset_path).train,
-        # get_dataset("taxi_30min", path=dataset_path).train,
-        # get_dataset("temperature_rain_without_missing", path=dataset_path).train,
-        # get_dataset("tourism_monthly", path=dataset_path).train,
-        # get_dataset("uber_tlc_daily", path=dataset_path).train,
-        # get_dataset("uber_tlc_hourly", path=dataset_path).train,
-        # get_dataset("vehicle_trips_without_missing", path=dataset_path).train,
-        # get_dataset("weather", path=dataset_path).train,
-        # get_dataset("wiki-rolling_nips", path=dataset_path).train,
-        # get_dataset("m4_daily", path=dataset_path).train,
-        # get_dataset("m4_hourly", path=dataset_path).train,
-        # get_dataset("m4_monthly", path=dataset_path).train,
-        # get_dataset("m4_quarterly", path=dataset_path).train,
-        # get_dataset("m4_yearly", path=dataset_path).train,
-        # get_dataset("wind_farms_without_missing", path=dataset_path).train,
+        get_dataset("car_parts_without_missing", path=dataset_path).train,
+        get_dataset("cif_2016", path=dataset_path).train,
+        get_dataset("covid_deaths", path=dataset_path).train,
+        get_dataset("electricity", path=dataset_path).train,
+        get_dataset("electricity_weekly", path=dataset_path).train,
+        get_dataset("exchange_rate", path=dataset_path).train,
+        get_dataset("fred_md", path=dataset_path).train,
+        get_dataset("hospital", path=dataset_path).train,
+        get_dataset("kaggle_web_traffic_weekly", path=dataset_path).train,
+        get_dataset("kdd_cup_2018_without_missing", path=dataset_path).train,
+        get_dataset("london_smart_meters_without_missing", path=dataset_path).train,
+        get_dataset("nn5_daily_with_missing", path=dataset_path).train,
+        get_dataset("nn5_weekly", path=dataset_path).train,
+        get_dataset("pedestrian_counts", path=dataset_path).train,
+        get_dataset("rideshare_without_missing", path=dataset_path).train,
+        get_dataset("saugeenday", path=dataset_path).train,
+        get_dataset("solar-energy", path=dataset_path).train,
+        get_dataset("solar_10_minutes", path=dataset_path).train,
+        get_dataset("solar_weekly", path=dataset_path).train,
+        get_dataset("taxi_30min", path=dataset_path).train,
+        get_dataset("temperature_rain_without_missing", path=dataset_path).train,
+        get_dataset("tourism_monthly", path=dataset_path).train,
+        get_dataset("uber_tlc_daily", path=dataset_path).train,
+        get_dataset("uber_tlc_hourly", path=dataset_path).train,
+        get_dataset("vehicle_trips_without_missing", path=dataset_path).train,
+        get_dataset("weather", path=dataset_path).train,
+        get_dataset("wiki-rolling_nips", path=dataset_path).train,
+        get_dataset("m4_daily", path=dataset_path).train,
+        get_dataset("m4_hourly", path=dataset_path).train,
+        get_dataset("m4_monthly", path=dataset_path).train,
+        get_dataset("m4_quarterly", path=dataset_path).train,
+        get_dataset("m4_yearly", path=dataset_path).train,
+        get_dataset("wind_farms_without_missing", path=dataset_path).train,
 ]
 
 
@@ -229,65 +229,65 @@ else:
 # Do a batch size search first without any logger
 batch_size = args.batch_size
 
-# print("DOING BATCH SIZE SEARCH...")
-# fulldir_batchsize_search = os.path.join(fulldir, "batch-size-search")
-# os.makedirs(fulldir_batchsize_search, exist_ok=True)
-# while True:
-#     print("Trying batch size:", batch_size)
-#     batch_size_search_dir = os.path.join(fulldir_batchsize_search, "batch-size-search-" + str(batch_size))
-#     os.makedirs(batch_size_search_dir, exist_ok=True)
+print("DOING BATCH SIZE SEARCH...")
+fulldir_batchsize_search = os.path.join(fulldir, "batch-size-search")
+os.makedirs(fulldir_batchsize_search, exist_ok=True)
+while True:
+    print("Trying batch size:", batch_size)
+    batch_size_search_dir = os.path.join(fulldir_batchsize_search, "batch-size-search-" + str(batch_size))
+    os.makedirs(batch_size_search_dir, exist_ok=True)
 
-#     bsz_logger = None
-#     try:
-#         estimator = LagGPTFlowsEstimator(
-#             prediction_length=prediction_length,
-#             context_length=args.context_length, # block_size: int = 2048 
-#             batch_size=batch_size, # 4
-#             n_layer=args.layers,
-#             n_head=args.heads,
-#             n_embd=args.dims_per_head*args.heads, # 4096
-#             dsf_marginal=config["gpt"]["dsf_marginal"],
-#             scaling=config["gpt"]["scaling"],
-#             lr=args.lr,
-#             lrs=config["gpt"]["lrs"],
-#             lrs_patience=int(config["gpt"]["lrs_patience"]),
-#             weight_decay=args.weight_decay,
-#             aug_prob = config["gpt"]["aug_prob"],
-#             aug_rate = config["gpt"]["aug_rate"] if "aug_rate" in config["gpt"] else 0.,
-#             aug_range = config["gpt"]["aug_range"] if "aug_range" in config["gpt"] else None,
-#             num_batches_per_epoch= 10,
-#             trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
-#                                 precision=args.precision, logger=False, devices=[0], \
-#                                 callbacks=[], default_root_dir=batch_size_search_dir),
-#             ckpt_path=None
-#         )
+    bsz_logger = None
+    try:
+        estimator = LagGPTFlowsEstimator(
+            prediction_length=prediction_length,
+            context_length=args.context_length, # block_size: int = 2048 
+            batch_size=batch_size, # 4
+            n_layer=args.layers,
+            n_head=args.heads,
+            n_embd=args.dims_per_head*args.heads, # 4096
+            dsf_marginal=config["gpt"]["dsf_marginal"],
+            scaling=config["gpt"]["scaling"],
+            lr=args.lr,
+            lrs=config["gpt"]["lrs"],
+            lrs_patience=int(config["gpt"]["lrs_patience"]),
+            weight_decay=args.weight_decay,
+            aug_prob = config["gpt"]["aug_prob"],
+            aug_rate = config["gpt"]["aug_rate"] if "aug_rate" in config["gpt"] else 0.,
+            aug_range = config["gpt"]["aug_range"] if "aug_range" in config["gpt"] else None,
+            num_batches_per_epoch= 10,
+            trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
+                                precision=args.precision, logger=False, devices=[0], \
+                                callbacks=[], default_root_dir=batch_size_search_dir),
+            ckpt_path=None
+        )
 
-#         predictor = estimator.train(
-#             training_data=dataset, 
-#             validation_data=val_dataset,
-#             shuffle_buffer_length=1000,
-#             ckpt_path=None
-#         )
+        predictor = estimator.train(
+            training_data=dataset, 
+            validation_data=val_dataset,
+            shuffle_buffer_length=1000,
+            ckpt_path=None
+        )
 
-#         print("Succesfully found batch size:", batch_size)
-#         break
-#     except RuntimeError as e:
-#         if "out of memory" in str(e):
-#             gc.collect()
-#             torch.cuda.empty_cache()
-#             if batch_size == 1: 
-#                 print("Batch is already at the minimum. Cannot reduce further. Exiting...")
-#                 exit(0)
-#             else:
-#                 print("Caught OutOfMemoryError. Reducing batch size...")
-#                 batch_size //= 2
-#                 continue
-#         else:
-#             print(e)
-#             exit(1)        
-# if batch_size != 1:
-#     batch_size //= 2
-#     print("Using batch size:", batch_size)
+        print("Succesfully found batch size:", batch_size)
+        break
+    except RuntimeError as e:
+        if "out of memory" in str(e):
+            gc.collect()
+            torch.cuda.empty_cache()
+            if batch_size == 1: 
+                print("Batch is already at the minimum. Cannot reduce further. Exiting...")
+                exit(0)
+            else:
+                print("Caught OutOfMemoryError. Reducing batch size...")
+                batch_size //= 2
+                continue
+        else:
+            print(e)
+            exit(1)        
+if batch_size != 1:
+    batch_size //= 2
+    print("Using batch size:", batch_size)
 
 
 if type(logger[0]) == WandbLogger: 
