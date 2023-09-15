@@ -72,8 +72,7 @@ parser.add_argument("--batch_size", default=64, type=int)
 parser.add_argument("--gradient_accumulation_steps", default=1, type=int)
 parser.add_argument("--early_stopping_patience", default=50, type=int)
 
-# Only evaluation on traffic
-parser.add_argument("--test_only", action="store_true")
+parser.add_argument("--get_metrics", action="store_true")
 
 # Dataset percentage selection
 parser.add_argument("--filter_datasets_percentage", type=float, default=1.)
@@ -124,39 +123,39 @@ dataset_path = Path(args.dataset_path)
 gluonts_ds = [
         get_dataset("airpassengers", path=dataset_path).train,
         get_dataset("australian_electricity_demand", path=dataset_path).train,
-        get_dataset("car_parts_without_missing", path=dataset_path).train,
-        get_dataset("cif_2016", path=dataset_path).train,
-        get_dataset("covid_deaths", path=dataset_path).train,
-        get_dataset("electricity", path=dataset_path).train,
-        get_dataset("electricity_weekly", path=dataset_path).train,
-        get_dataset("exchange_rate", path=dataset_path).train,
-        get_dataset("fred_md", path=dataset_path).train,
-        get_dataset("hospital", path=dataset_path).train,
-        get_dataset("kaggle_web_traffic_weekly", path=dataset_path).train,
-        get_dataset("kdd_cup_2018_without_missing", path=dataset_path).train,
-        get_dataset("london_smart_meters_without_missing", path=dataset_path).train,
-        get_dataset("nn5_daily_with_missing", path=dataset_path).train,
-        get_dataset("nn5_weekly", path=dataset_path).train,
-        get_dataset("pedestrian_counts", path=dataset_path).train,
-        get_dataset("rideshare_without_missing", path=dataset_path).train,
-        get_dataset("saugeenday", path=dataset_path).train,
-        get_dataset("solar-energy", path=dataset_path).train,
-        get_dataset("solar_10_minutes", path=dataset_path).train,
-        get_dataset("solar_weekly", path=dataset_path).train,
-        get_dataset("taxi_30min", path=dataset_path).train,
-        get_dataset("temperature_rain_without_missing", path=dataset_path).train,
-        get_dataset("tourism_monthly", path=dataset_path).train,
-        get_dataset("uber_tlc_daily", path=dataset_path).train,
-        get_dataset("uber_tlc_hourly", path=dataset_path).train,
-        get_dataset("vehicle_trips_without_missing", path=dataset_path).train,
-        get_dataset("weather", path=dataset_path).train,
-        get_dataset("wiki-rolling_nips", path=dataset_path).train,
-        get_dataset("m4_daily", path=dataset_path).train,
-        get_dataset("m4_hourly", path=dataset_path).train,
-        get_dataset("m4_monthly", path=dataset_path).train,
-        get_dataset("m4_quarterly", path=dataset_path).train,
-        get_dataset("m4_yearly", path=dataset_path).train,
-        get_dataset("wind_farms_without_missing", path=dataset_path).train,
+        # get_dataset("car_parts_without_missing", path=dataset_path).train,
+        # get_dataset("cif_2016", path=dataset_path).train,
+        # get_dataset("covid_deaths", path=dataset_path).train,
+        # get_dataset("electricity", path=dataset_path).train,
+        # get_dataset("electricity_weekly", path=dataset_path).train,
+        # get_dataset("exchange_rate", path=dataset_path).train,
+        # get_dataset("fred_md", path=dataset_path).train,
+        # get_dataset("hospital", path=dataset_path).train,
+        # get_dataset("kaggle_web_traffic_weekly", path=dataset_path).train,
+        # get_dataset("kdd_cup_2018_without_missing", path=dataset_path).train,
+        # get_dataset("london_smart_meters_without_missing", path=dataset_path).train,
+        # get_dataset("nn5_daily_with_missing", path=dataset_path).train,
+        # get_dataset("nn5_weekly", path=dataset_path).train,
+        # get_dataset("pedestrian_counts", path=dataset_path).train,
+        # get_dataset("rideshare_without_missing", path=dataset_path).train,
+        # get_dataset("saugeenday", path=dataset_path).train,
+        # get_dataset("solar-energy", path=dataset_path).train,
+        # get_dataset("solar_10_minutes", path=dataset_path).train,
+        # get_dataset("solar_weekly", path=dataset_path).train,
+        # get_dataset("taxi_30min", path=dataset_path).train,
+        # get_dataset("temperature_rain_without_missing", path=dataset_path).train,
+        # get_dataset("tourism_monthly", path=dataset_path).train,
+        # get_dataset("uber_tlc_daily", path=dataset_path).train,
+        # get_dataset("uber_tlc_hourly", path=dataset_path).train,
+        # get_dataset("vehicle_trips_without_missing", path=dataset_path).train,
+        # get_dataset("weather", path=dataset_path).train,
+        # get_dataset("wiki-rolling_nips", path=dataset_path).train,
+        # get_dataset("m4_daily", path=dataset_path).train,
+        # get_dataset("m4_hourly", path=dataset_path).train,
+        # get_dataset("m4_monthly", path=dataset_path).train,
+        # get_dataset("m4_quarterly", path=dataset_path).train,
+        # get_dataset("m4_yearly", path=dataset_path).train,
+        # get_dataset("wind_farms_without_missing", path=dataset_path).train,
 ]
 
 
@@ -167,6 +166,12 @@ dataset = CombinedDataset(gluonts_ds, weights=([sum([len(x["target"]) for x in d
 
 val_dataset = get_dataset(config["dataset"]["val"], path=dataset_path).test
 meta = get_dataset(config["dataset"]["val"], path=dataset_path).metadata
+
+test_dataset = get_dataset(config["dataset"]["test"], path=dataset_path).test
+test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
+
+# Prediction length is larger of the two
+prediction_length = config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else max(meta.prediction_length, test_meta.prediction_length)
 
 # Make the experiment_name
 experiment_name = ("data-scaling-weighted-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix)
@@ -212,88 +217,88 @@ logger = [experiment_logger]
 lr_monitor = LearningRateMonitor(logging_interval="epoch")
 early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=int(args.early_stopping_patience), verbose=True, mode="min")
 lr_finder = LearningRateFinder(min_lr=1e-6, max_lr=1e-1, num_training_steps=100, early_stop_threshold=None)
+model_checkpointing = ModelCheckpoint(save_top_k=1)
 
 if not ckpt_path:
-    callbacks=[lr_finder, lr_monitor, early_stop_callback]
+    callbacks=[lr_finder, lr_monitor, early_stop_callback, model_checkpointing]
 else:
-    callbacks=[lr_monitor, early_stop_callback]
+    callbacks=[lr_monitor, early_stop_callback, model_checkpointing]
 
 # callbacks = [] # For data scaling
 
 # Do a batch size search first without any logger
 batch_size = args.batch_size
 
-print("DOING BATCH SIZE SEARCH...")
-fulldir_batchsize_search = os.path.join(fulldir, "batch-size-search")
-os.makedirs(fulldir_batchsize_search, exist_ok=True)
-while True:
-    print("Trying batch size:", batch_size)
-    batch_size_search_dir = os.path.join(fulldir_batchsize_search, "batch-size-search-" + str(batch_size))
-    os.makedirs(batch_size_search_dir, exist_ok=True)
+# print("DOING BATCH SIZE SEARCH...")
+# fulldir_batchsize_search = os.path.join(fulldir, "batch-size-search")
+# os.makedirs(fulldir_batchsize_search, exist_ok=True)
+# while True:
+#     print("Trying batch size:", batch_size)
+#     batch_size_search_dir = os.path.join(fulldir_batchsize_search, "batch-size-search-" + str(batch_size))
+#     os.makedirs(batch_size_search_dir, exist_ok=True)
 
-    bsz_logger = None
-    try:
-        estimator = LagGPTFlowsEstimator(
-            prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
-            context_length=args.context_length, # block_size: int = 2048 
-            batch_size=batch_size, # 4
-            n_layer=args.layers,
-            n_head=args.heads,
-            n_embd=args.dims_per_head*args.heads, # 4096
-            dsf_marginal=config["gpt"]["dsf_marginal"],
-            scaling=config["gpt"]["scaling"],
-            lr=args.lr,
-            lrs=config["gpt"]["lrs"],
-            lrs_patience=int(config["gpt"]["lrs_patience"]),
-            weight_decay=args.weight_decay,
-            aug_prob = config["gpt"]["aug_prob"],
-            aug_rate = config["gpt"]["aug_rate"] if "aug_rate" in config["gpt"] else 0.,
-            aug_range = config["gpt"]["aug_range"] if "aug_range" in config["gpt"] else None,
-            num_batches_per_epoch= 10,
-            trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
-                                precision=args.precision, logger=False, devices=[0], \
-                                callbacks=[], default_root_dir=batch_size_search_dir, accumulate_grad_batches=args.gradient_accumulation_steps),
-            ckpt_path=None
-        )
+#     bsz_logger = None
+#     try:
+#         estimator = LagGPTFlowsEstimator(
+#             prediction_length=prediction_length,
+#             context_length=args.context_length, # block_size: int = 2048 
+#             batch_size=batch_size, # 4
+#             n_layer=args.layers,
+#             n_head=args.heads,
+#             n_embd=args.dims_per_head*args.heads, # 4096
+#             dsf_marginal=config["gpt"]["dsf_marginal"],
+#             scaling=config["gpt"]["scaling"],
+#             lr=args.lr,
+#             lrs=config["gpt"]["lrs"],
+#             lrs_patience=int(config["gpt"]["lrs_patience"]),
+#             weight_decay=args.weight_decay,
+#             aug_prob = config["gpt"]["aug_prob"],
+#             aug_rate = config["gpt"]["aug_rate"] if "aug_rate" in config["gpt"] else 0.,
+#             aug_range = config["gpt"]["aug_range"] if "aug_range" in config["gpt"] else None,
+#             num_batches_per_epoch= 10,
+#             trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
+#                                 precision=args.precision, logger=False, devices=[0], \
+#                                 callbacks=[], default_root_dir=batch_size_search_dir),
+#             ckpt_path=None
+#         )
 
-        predictor = estimator.train(
-            training_data=dataset, 
-            validation_data=val_dataset,
-            shuffle_buffer_length=1000,
-            ckpt_path=None
-        )
+#         predictor = estimator.train(
+#             training_data=dataset, 
+#             validation_data=val_dataset,
+#             shuffle_buffer_length=1000,
+#             ckpt_path=None
+#         )
 
-        print("Succesfully found batch size:", batch_size)
-        break
-    except RuntimeError as e:
-        if "out of memory" in str(e):
-            gc.collect()
-            torch.cuda.empty_cache()
-            if batch_size == 1: 
-                print("Batch is already at the minimum. Cannot reduce further. Exiting...")
-                exit(0)
-            else:
-                print("Caught OutOfMemoryError. Reducing batch size...")
-                batch_size //= 2
-                continue
-        else:
-            print(e)
-            exit(1)        
-if batch_size != 1:
-    batch_size //= 2
-    print("Using batch size:", batch_size)
+#         print("Succesfully found batch size:", batch_size)
+#         break
+#     except RuntimeError as e:
+#         if "out of memory" in str(e):
+#             gc.collect()
+#             torch.cuda.empty_cache()
+#             if batch_size == 1: 
+#                 print("Batch is already at the minimum. Cannot reduce further. Exiting...")
+#                 exit(0)
+#             else:
+#                 print("Caught OutOfMemoryError. Reducing batch size...")
+#                 batch_size //= 2
+#                 continue
+#         else:
+#             print(e)
+#             exit(1)        
+# if batch_size != 1:
+#     batch_size //= 2
+#     print("Using batch size:", batch_size)
 
 
 if type(logger[0]) == WandbLogger: 
     wandb.config.update({"batch_size": batch_size}, allow_val_change=True)
-    wandb.config.update({"gradient_accumulation_steps": args.gradient_accumulation_steps}, allow_val_change=True)
 
 gc.collect()
 torch.cuda.empty_cache()
 print("Training...")
 
 estimator = LagGPTFlowsEstimator(
-    prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
+    prediction_length=prediction_length,
     context_length=args.context_length, # block_size: int = 2048 
     batch_size=batch_size, # 4
     n_layer=args.layers,
@@ -311,7 +316,7 @@ estimator = LagGPTFlowsEstimator(
     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
     trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
                         precision=args.precision, logger=logger, devices=[0], \
-                        callbacks=callbacks, default_root_dir=fulldir_experiments, accumulate_grad_batches=args.gradient_accumulation_steps),
+                        callbacks=callbacks, default_root_dir=fulldir_experiments),
     ckpt_path=ckpt_path,
     num_parallel_samples=10
 )
@@ -328,73 +333,56 @@ predictor = estimator.train(
 )
 end_time = time.time()
 
-# # Perform evaluation on the val dataset
-# forecast_it, ts_it = make_evaluation_predictions(dataset=val_dataset,
-#                                              predictor=predictor,
-#                                              num_samples=100)
-# forecasts = list(forecast_it)
-# targets = list(ts_it)
-# evaluator = MultivariateEvaluator(quantiles=(np.arange(20)/20.0)[1:],
-#                                   target_agg_funcs={'sum': np.sum})
-# agg_metric, _ = evaluator(targets, forecasts, num_series=len(dataset_test))
-# agg_metric_modified = {}
-# for key ,value in agg_metric.items():
-#     agg_metric_modified["val/"+key] = value
-# if type(logger[0] == CSVLogger):
-#     logger[0].log_metrics(agg_metric_modified, step=0)
+# Print best model path
+ckpt_path = model_checkpointing.best_model_path if model_checkpointing.best_model_path else ckpt_path
+print("ckpt_path:", ckpt_path)
 
-# # Perform evaluation on the test dataset with the same length
-# test_dataset = get_dataset(config["dataset"]["test"], path=dataset_path).test
-# test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
-# forecast_it, ts_it = make_evaluation_predictions(dataset=test_dataset,
-#                                              predictor=predictor,
-#                                              num_samples=100)
-# forecasts = list(forecast_it)
-# targets = list(ts_it)
-# evaluator = MultivariateEvaluator(quantiles=(np.arange(20)/20.0)[1:],
-#                                   target_agg_funcs={'sum': np.sum})
-# agg_metric, _ = evaluator(targets, forecasts, num_series=len(dataset_test))
-# agg_metric_modified = {}
-# for key ,value in agg_metric.items():
-#     agg_metric_modified["test-same-len/"+key] = value
-# if type(logger[0] == CSVLogger):
-#     logger[0].log_metrics(agg_metric_modified, step=0)
+# NLL evaluation
+
+# Validate on m4 weekly test just to confirm
+print("Validation on the validation set")
+validation_metrics = estimator.validate(
+    validation_data=val_dataset,
+    ckpt_path=ckpt_path,
+)
+logger[0].log_metrics({"val/final_val_loss": validation_metrics[0]["val_loss"]})
+
+# Validate on traffic test
+print("Validation on the test set")
+test_metrics = estimator.validate(
+    validation_data=test_dataset,
+    ckpt_path=ckpt_path,
+)
+logger[0].log_metrics({"test/final_test_loss": test_metrics[0]["val_loss"]})
 
 
-# # Perform evaluation on the test dataset with its length
-# test_dataset = get_dataset(config["dataset"]["test"], path=dataset_path).test
-# test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
-# estimator = LagGPTFlowsEstimator(
-#     prediction_length=test_meta.prediction_length,
-#     context_length=args.context_length, # block_size: int = 2048 
-#     batch_size=batch_size, # 4
-#     n_layer=args.layers,
-#     n_head=args.heads,
-#     n_embd=args.dims_per_head*args.heads, # 4096
-#     dsf_marginal=config["gpt"]["dsf_marginal"],
-#     scaling=config["gpt"]["scaling"],
-#     lr=args.lr,
-#     lrs=config["gpt"]["lrs"],
-#     lrs_patience=int(config["gpt"]["lrs_patience"]),
-#     weight_decay=args.weight_decay,
-#     aug_prob = config["gpt"]["aug_prob"],
-#     aug_rate = config["gpt"]["aug_rate"] if "aug_rate" in config["gpt"] else 0.,
-#     aug_range = config["gpt"]["aug_range"] if "aug_range" in config["gpt"] else None,
-#     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
-#     trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
-#                         precision=args.precision, logger=None, devices=[0], \
-#                         callbacks=callbacks, default_root_dir=fulldir_experiments, accumulate_grad_batches=args.gradient_accumulation_steps)
-# )
-# forecast_it, ts_it = make_evaluation_predictions(dataset=test_dataset,
-#                                              predictor=predictor,
-#                                              num_samples=100)
-# forecasts = list(forecast_it)
-# targets = list(ts_it)
-# evaluator = MultivariateEvaluator(quantiles=(np.arange(20)/20.0)[1:],
-#                                   target_agg_funcs={'sum': np.sum})
-# agg_metric, _ = evaluator(targets, forecasts, num_series=len(dataset_test))
-# agg_metric_modified = {}
-# for key ,value in agg_metric.items():
-#     agg_metric_modified["test/"+key] = value
-# if type(logger[0] == CSVLogger):
-#     logger[0].log_metrics(agg_metric_modified, step=0)
+if args.get_metrics:
+    print("Metric-evaluation on the validation set")
+    # Metrics evaluation
+    # Validate on m4 weekly
+    forecast_it, ts_it = make_evaluation_predictions(
+        dataset=val_dataset, predictor=predictor
+    )
+    forecasts = list(forecast_it)
+    tss = list(ts_it)
+    evaluator = Evaluator()
+    agg_metrics, ts_metrics = evaluator(
+        iter(tss), iter(forecasts), num_series=len(val_dataset)
+    )
+    for key, value in agg_metrics.items():
+        logger[0].log_metrics({"val-metrics/"+key: value})
+
+
+    # Validate on test
+    print("Metric-evaluation on the test set")
+    forecast_it, ts_it = make_evaluation_predictions(
+        dataset=test_dataset, predictor=predictor
+    )
+    forecasts = list(forecast_it)
+    tss = list(ts_it)
+    evaluator = Evaluator()
+    agg_metrics, ts_metrics = evaluator(
+        iter(tss), iter(forecasts), num_series=len(test_dataset)
+    )
+    for key, value in agg_metrics.items():
+        logger[0].log_metrics({"test-metrics/"+key: value})
