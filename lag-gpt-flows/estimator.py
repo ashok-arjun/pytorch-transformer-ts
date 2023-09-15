@@ -97,6 +97,7 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
         aug_prob: float = 0.1,
         aug_rate: float = 0.1,
         aug_range = None,
+        dropout = 0.,
         loss: DistributionLoss = NegativeLogLikelihood(),
         num_parallel_samples: int = 100,
         batch_size: int = 32,
@@ -140,6 +141,7 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
         self.aug_prob = aug_prob
         self.aug_rate = aug_rate
         self.aug_range = aug_range
+        self.dropout = dropout
 
         self.ckpt_path = ckpt_path
 
@@ -175,6 +177,7 @@ class LagGPTFlowsEstimator(PyTorchLightningEstimator):
             "n_head": self.n_head,
             "scaling": self.scaling,
             "dsf_marginal": self.dsf_marginal,
+            "dropout": self.dropout,
             "num_parallel_samples": self.num_parallel_samples,
         }
         if self.ckpt_path is not None:

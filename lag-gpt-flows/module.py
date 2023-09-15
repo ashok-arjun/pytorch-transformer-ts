@@ -49,6 +49,7 @@ class LTSMConfig:
     n_layer: int = 32
     n_head: int = 32
     n_embd: int = 4096
+    dropout: float = 0
 
 
 class Block(nn.Module):
@@ -79,6 +80,8 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.block_size = config.block_size
         self.rope_cache: Optional[torch.Tensor] = None
+
+        self.dropout = config.dropout
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # batch size, sequence length, embedding dimensionality (n_embd)
@@ -112,7 +115,7 @@ class CausalSelfAttention(nn.Module):
 
         # efficient attention using Flash Attention CUDA kernels
         y = scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=True
+            q, k, v, attn_mask=None, dropout_p=self.dropout, is_causal=True
         )
 
         y = (
@@ -237,6 +240,7 @@ class LagGPTFlowsModel(nn.Module):
         n_embd: int,
         n_head: int,
         dsf_marginal: Dict[str, Any],
+        dropout: float,
         num_parallel_samples: int = 100,
     ) -> None:
         super().__init__()
@@ -259,6 +263,7 @@ class LagGPTFlowsModel(nn.Module):
             n_head=n_head,
             block_size=context_length + prediction_length,
             feature_size=input_size * (len(self.lags_seq)) + 2,
+            dropout=dropout
         )
         self.context_length = context_length
         self.prediction_length = prediction_length

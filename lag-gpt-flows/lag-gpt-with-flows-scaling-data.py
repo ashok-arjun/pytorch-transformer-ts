@@ -66,6 +66,9 @@ parser.add_argument("--dims_per_head", default=16, type=int)
 parser.add_argument("--context_length", default=1024, type=int)
 parser.add_argument("--lr", default=0.001, type=float)
 parser.add_argument("--weight_decay", default=0, type=float)
+parser.add_argument("--dropout", default=0, type=float)
+parser.add_argument("--aug_prob", default=1, type=float)
+parser.add_argument("--aug_rate", default=0.1, type=float)
 
 # Also the batch size is by default set to a high value and found by the highest possible size at which 1 epoch runs
 parser.add_argument("--batch_size", default=64, type=int)
@@ -174,7 +177,7 @@ test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
 prediction_length = config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else max(meta.prediction_length, test_meta.prediction_length)
 
 # Make the experiment_name
-experiment_name = ("data-scaling-weighted-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix)
+experiment_name = ("data-scaling-weighted-"+str(args.aug_prob)+"_"+args.suffix if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(args.aug_prob)+"_"+args.suffix)
 fulldir = os.path.join(pathlib.Path(__file__).parent.resolve(), "scaling-logs", experiment_name, str(args.seed)) # Always creates the experiment directory inside "lag-gpt-flows"
 os.makedirs(fulldir, exist_ok=True)
 
@@ -252,9 +255,10 @@ while True:
             lrs=config["gpt"]["lrs"],
             lrs_patience=int(config["gpt"]["lrs_patience"]),
             weight_decay=args.weight_decay,
-            aug_prob = config["gpt"]["aug_prob"],
-            aug_rate = config["gpt"]["aug_rate"] if "aug_rate" in config["gpt"] else 0.,
+            aug_prob = args.aug_prob,
+            aug_rate = args.aug_rate,
             aug_range = config["gpt"]["aug_range"] if "aug_range" in config["gpt"] else None,
+            dropout=args.dropout,
             num_batches_per_epoch= 10,
             trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
                                 precision=args.precision, logger=False, devices=[0], \
@@ -310,9 +314,10 @@ estimator = LagGPTFlowsEstimator(
     lrs=config["gpt"]["lrs"],
     lrs_patience=int(config["gpt"]["lrs_patience"]),
     weight_decay=args.weight_decay,
-    aug_prob = config["gpt"]["aug_prob"],
-    aug_rate = config["gpt"]["aug_rate"] if "aug_rate" in config["gpt"] else 0.,
+    aug_prob = args.aug_prob,
+    aug_rate = args.aug_rate,
     aug_range = config["gpt"]["aug_range"] if "aug_range" in config["gpt"] else None,
+    dropout = args.dropout,
     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
     trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
                         precision=args.precision, logger=logger, devices=[0], \
