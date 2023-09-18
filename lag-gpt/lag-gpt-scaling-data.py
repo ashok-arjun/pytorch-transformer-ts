@@ -1,16 +1,17 @@
 import random
+import time
 from pathlib import Path
 import pandas as pd
 import os
-import matplotlib.pyplot as plt
 from glob import glob
 from hashlib import sha1
 
 from gluonts.evaluation import make_evaluation_predictions, Evaluator
 from gluonts.dataset.repository.datasets import get_dataset
+
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
-from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint, DeviceStatsMonitor, EarlyStopping, LearningRateFinder, LearningRateMonitor
 
 from estimator import LagGPTEstimator
 from pathlib import Path
@@ -18,15 +19,77 @@ import pathlib
 
 import argparse
 import yaml
+import gc
+import torch
+import wandb
+
+
+def select_datasets(datasets, target_percentage=1.0):
+    if target_percentage == 1.0: return datasets
+    datasets_lengths = []
+
+    for dataset in datasets:
+        datasets_lengths.append(sum([len(x["target"]) for x in dataset]))
+
+    datasets_lengths_normalized = []
+    for i in range(len(datasets_lengths)):
+        datasets_lengths_normalized.append(datasets_lengths[i] / sum(datasets_lengths))
+
+    datasets_lengths_normalized.sort()
+    datasets = [x for _, x in sorted(zip(datasets_lengths_normalized, datasets))]
+
+    selected_datasets = []
+    total_percentage = 0
+    
+    for i, dataset_length in enumerate(datasets_lengths_normalized):
+        if total_percentage + dataset_length <= target_percentage:
+            selected_datasets.append(datasets[i])
+            total_percentage += dataset_length
+        else:
+            break
+    
+    print("Selected", len(selected_datasets), "with total percentage", total_percentage)
+
+    return selected_datasets
 
 parser = argparse.ArgumentParser()
 parser.add_argument("filename", help = "YAML config file.")
-parser.add_argument("--suffix", default="", type=str)
+parser.add_argument("--suffix", default="", type=str, required=True, help="This can be useful information to distinguish runs, like `heads-scaling-5-heads`")
 parser.add_argument("--seed", default=42, type=int)
-parser.add_argument("--dataset_path", default="/home/toolkit/datasets", type=str)
+parser.add_argument("--dataset_path", default="/gpfs/alpine/csc499/scratch/arjunashok/datasets", type=str)
 parser.add_argument("--precision", default="32", type=str, choices=["32", "16", "bf16-mixed"])
+
+# For scaling, I am putting all parameters here to save time in creating the yaml files
+parser.add_argument("--layers", default=8, type=int)
+parser.add_argument("--heads", default=4, type=int)
+parser.add_argument("--dims_per_head", default=16, type=int)
+parser.add_argument("--context_length", default=1024, type=int)
+parser.add_argument("--lr", default=0.001, type=float)
+parser.add_argument("--weight_decay", default=0, type=float)
+parser.add_argument("--dropout", default=0, type=float)
+parser.add_argument("--aug_prob", default=1, type=float)
+parser.add_argument("--aug_rate", default=0.1, type=float)
+
+# Also the batch size is by default set to a high value and found by the highest possible size at which 1 epoch runs
+parser.add_argument("--batch_size", default=64, type=int)
+parser.add_argument("--gradient_accumulation_steps", default=1, type=int)
+parser.add_argument("--early_stopping_patience", default=50, type=int)
+
+parser.add_argument("--get_metrics", action="store_true")
+
+# Dataset percentage selection
+parser.add_argument("--filter_datasets_percentage", type=float, default=1.)
+
+
 args = parser.parse_args()
 
+device = torch.cuda.current_device()
+memory_stats = torch.cuda.memory_stats(device=device)
+t = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+allocated_memory_gb = memory_stats["allocated_bytes.all.current"] / (1024 ** 3)
+
+print(f"Total Memory: {t:.2f} GB")
+print(f"Allocated Memory: {allocated_memory_gb:.2f} GB")
 
 with open(args.filename, mode="rt", encoding="utf-8") as file:
     config = yaml.safe_load(file)
@@ -97,25 +160,39 @@ gluonts_ds = [
         get_dataset("m4_yearly", path=dataset_path).train,
         get_dataset("wind_farms_without_missing", path=dataset_path).train,
 ]
-dataset = CombinedDataset(gluonts_ds, weights=([sum([len(x["target"]) for x in d]) for d in gluonts_ds] if config["dataset"]["weighted"] else None)   )
+
+
+if args.filter_datasets_percentage < 1.:
+    gluonts_ds = select_datasets(gluonts_ds, args.filter_datasets_percentage)
+
+dataset = CombinedDataset(gluonts_ds, weights=([sum([len(x["target"]) for x in d]) for d in gluonts_ds] if config["dataset"]["weighted"] else None), seed=args.seed) 
 
 val_dataset = get_dataset(config["dataset"]["val"], path=dataset_path).test
 meta = get_dataset(config["dataset"]["val"], path=dataset_path).metadata
 
+test_dataset = get_dataset(config["dataset"]["test"], path=dataset_path).test
+test_meta = get_dataset(config["dataset"]["test"], path=dataset_path).metadata
+
+# Prediction length is larger of the two
+prediction_length = config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else max(meta.prediction_length, test_meta.prediction_length)
+
 # Make the experiment_name
-experiment_name = ("data-scaling-weighted-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(config["gpt"]["aug_prob"])+"_"+args.suffix)
-fulldir = os.path.join(pathlib.Path(__file__).parent.resolve(), experiment_name, str(args.seed))
+experiment_name = ("data-scaling-weighted-"+str(args.aug_prob)+"_"+args.suffix if config["dataset"]["weighted"] else "data-scaling-uniform-"+str(args.aug_prob)+"_"+args.suffix)
+fulldir = os.path.join(pathlib.Path(__file__).parent.resolve(), "scaling-logs", experiment_name, str(args.seed)) # Always creates the experiment directory inside "lag-gpt"
 os.makedirs(fulldir, exist_ok=True)
+
+fulldir_experiments = os.path.join(fulldir, "experiments")
+os.makedirs(fulldir_experiments, exist_ok=True)
 
 # Code to retrieve the version with the highest #epoch stored and restore it incl directory and its checkpoint
 lightning_version_to_use, ckpt_path = None, None
 max_epoch = -1
-if "scaling_logs" in os.listdir(fulldir):
-    ckpts = glob(fulldir+"/scaling_logs/" + sha1(fulldir.encode("utf-8")).hexdigest()[:8] + "/checkpoints/*.ckpt")
+if "scaling_logs" in os.listdir(fulldir_experiments):
+    ckpts = glob(fulldir_experiments+"/scaling_logs/" + sha1(fulldir_experiments.encode("utf-8")).hexdigest()[:8] + "/checkpoints/*.ckpt")
     if len(ckpts): ckpt_path = ckpts[0]
-elif "lightning_logs" in os.listdir(fulldir):
-    for lightning_version in os.listdir(fulldir+"/lightning_logs/"):
-        ckpts = glob(fulldir+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
+elif "lightning_logs" in os.listdir(fulldir_experiments):
+    for lightning_version in os.listdir(fulldir_experiments+"/lightning_logs/"):
+        ckpts = glob(fulldir_experiments+"/lightning_logs/" + lightning_version + "/checkpoints/*.ckpt")
         if len(ckpts): 
             epoch = int(ckpts[0][ckpts[0].find("=")+1:ckpts[0].find("-step")])
             if epoch > max_epoch:
@@ -127,61 +204,182 @@ elif "lightning_logs" in os.listdir(fulldir):
 # Make a CSV Logger with the specific version
 if "metrics" in config:
     if config["metrics"]["logger"] == "csv":
-        experiment_logger = CSVLogger(save_dir=fulldir)
+        experiment_logger = CSVLogger(save_dir=fulldir_experiments)
     else:
         tags = config["wandb"]["tags"] if "wandb" in config and "tags" in config["wandb"] else []
         if type(tags) != list: tags = [tags]
-        experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir, group=experiment_name, \
-                            tags=tags, \
+        experiment_logger = WandbLogger(name=experiment_name + "/" + str(args.seed), save_dir=fulldir_experiments, group=experiment_name, \
+                            tags=tags, entity="arjun-team", \
                                 project=config["wandb"]["project"] if "wandb" in config and "project" in config["wandb"] else "scaling_logs", \
-                                    config=config, id=sha1(fulldir.encode("utf-8")).hexdigest()[:8])
+                                config=config, id=sha1(fulldir_experiments.encode("utf-8")).hexdigest()[:8], allow_val_change=True, \
+                                dir="/gpfs/alpine/csc499/scratch/arjunashok/pytorch-transformer-ts/wandb-gradnorms", mode="offline")
 else:
-    experiment_logger = CSVLogger(save_dir=fulldir)
+    experiment_logger = CSVLogger(save_dir=fulldir_experiments)
 logger = [experiment_logger]
 
-# checkpoint_callback = ModelCheckpoint(
-#     save_last=True,
-#     verbose=True,
-#     monitor='val_loss',
-#     mode='min'
-# )
-early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=50, verbose=True, mode="min")
-callbacks=[early_stop_callback]
+lr_monitor = LearningRateMonitor(logging_interval="epoch")
+early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=0.00, patience=int(args.early_stopping_patience), verbose=True, mode="min")
+lr_finder = LearningRateFinder(min_lr=1e-6, max_lr=1e-1, num_training_steps=100, early_stop_threshold=None)
+model_checkpointing = ModelCheckpoint(save_top_k=1)
+
+if not ckpt_path:
+    callbacks=[lr_finder, lr_monitor, early_stop_callback, model_checkpointing]
+else:
+    callbacks=[lr_monitor, early_stop_callback, model_checkpointing]
+
 # callbacks = [] # For data scaling
 
+# Do a batch size search first without any logger
+batch_size = args.batch_size
+
+print("DOING BATCH SIZE SEARCH...")
+fulldir_batchsize_search = os.path.join(fulldir, "batch-size-search")
+os.makedirs(fulldir_batchsize_search, exist_ok=True)
+while True:
+    print("Trying batch size:", batch_size)
+    batch_size_search_dir = os.path.join(fulldir_batchsize_search, "batch-size-search-" + str(batch_size))
+    os.makedirs(batch_size_search_dir, exist_ok=True)
+
+    bsz_logger = None
+    try:
+        estimator = LagGPTEstimator(
+            prediction_length=prediction_length,
+            context_length=args.context_length, # block_size: int = 2048 
+            batch_size=batch_size, # 4
+            n_layer=args.layers,
+            n_head=args.heads,
+            n_embd=args.dims_per_head*args.heads, # 4096
+            scaling=config["gpt"]["scaling"],
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            aug_prob = args.aug_prob,
+            aug_rate = args.aug_rate,
+            dropout=args.dropout,
+            num_batches_per_epoch= 10,
+            trainer_kwargs=dict(max_epochs=1, accelerator="gpu", \
+                                precision=args.precision, logger=False, devices=[0], \
+                                callbacks=[], default_root_dir=batch_size_search_dir),
+            ckpt_path=None
+        )
+
+        predictor = estimator.train(
+            training_data=dataset, 
+            validation_data=val_dataset,
+            shuffle_buffer_length=1000,
+            ckpt_path=None
+        )
+
+        print("Succesfully found batch size:", batch_size)
+        break
+    except RuntimeError as e:
+        if "out of memory" in str(e):
+            gc.collect()
+            torch.cuda.empty_cache()
+            if batch_size == 1: 
+                print("Batch is already at the minimum. Cannot reduce further. Exiting...")
+                exit(0)
+            else:
+                print("Caught OutOfMemoryError. Reducing batch size...")
+                batch_size //= 2
+                continue
+        else:
+            print(e)
+            exit(1)        
+if batch_size != 1:
+    batch_size //= 2
+    print("Using batch size:", batch_size)
+
+
+if type(logger[0]) == WandbLogger: 
+    wandb.config.update({"batch_size": batch_size}, allow_val_change=True)
+
+gc.collect()
+torch.cuda.empty_cache()
+print("Training...")
+
 estimator = LagGPTEstimator(
-    prediction_length=config["gpt"]["prediction_length"] if "prediction_length" in config["gpt"] else meta.prediction_length,
-    context_length=config["gpt"]["context_length"], # block_size: int = 2048 
-    batch_size=config["gpt"]["batch_size"], # 4
-    n_layer=config["gpt"]["n_layer"],
-    n_head=config["gpt"]["n_head"],
-    n_embd=config["gpt"]["n_embd_per_head"]*config["gpt"]["n_head"], # 4096
+    prediction_length=prediction_length,
+    context_length=args.context_length, # block_size: int = 2048 
+    batch_size=batch_size, # 4
+    n_layer=args.layers,
+    n_head=args.heads,
+    n_embd=args.dims_per_head*args.heads, # 4096
     scaling=config["gpt"]["scaling"],
-    aug_prob = config["gpt"]["aug_prob"],
-    aug_rate = config["gpt"]["aug_rate"],
+    lr=args.lr,
+    weight_decay=args.weight_decay,
+    aug_prob = args.aug_prob,
+    aug_rate = args.aug_rate,
+    dropout = args.dropout,
     num_batches_per_epoch= config["gpt"]["batches_per_epoch"],
     trainer_kwargs=dict(max_epochs=config["gpt"]["max_epochs"], accelerator="gpu", \
-                        precision=args.precision, logger=logger, devices=[config["CUDA"]["device_id"]], \
-                        callbacks=callbacks, check_val_every_n_epoch=config["check_val_every_n_epoch"] if "check_val_every_n_epoch" in config else 1),
-    ckpt_path = ckpt_path
+                        precision=args.precision, logger=logger, devices=[0], \
+                        callbacks=callbacks, default_root_dir=fulldir_experiments),
+    ckpt_path=ckpt_path,
+    num_parallel_samples=10
 )
 
+num_parameters = sum(p.numel() for p in estimator.create_lightning_module().parameters())
+if type(logger[0]) == WandbLogger: wandb.config.update({"num_parameters": num_parameters})
+
+start_time = time.time()
 predictor = estimator.train(
     training_data=dataset, 
     validation_data=val_dataset,
     shuffle_buffer_length=1000,
     ckpt_path=ckpt_path
 )
+end_time = time.time()
+
+# Print best model path
+ckpt_path = model_checkpointing.best_model_path if model_checkpointing.best_model_path else ckpt_path
+print("ckpt_path:", ckpt_path)
+
+# NLL evaluation
+
+# Validate on m4 weekly test just to confirm
+print("Validation on the validation set")
+validation_metrics = estimator.validate(
+    validation_data=val_dataset,
+    ckpt_path=ckpt_path,
+)
+logger[0].log_metrics({"val/final_val_loss": validation_metrics[0]["val_loss"]})
+
+# Validate on traffic test
+print("Validation on the test set")
+test_metrics = estimator.validate(
+    validation_data=test_dataset,
+    ckpt_path=ckpt_path,
+)
+logger[0].log_metrics({"test/final_test_loss": test_metrics[0]["val_loss"]})
 
 
-# loss_df = pd.read_csv("data-scaling-logs/"+experiment_name+"/version_"+str(experiment_version)+"/metrics.csv")
-# train_loss = loss_df.dropna(subset=["train_loss"])
-# val_loss = loss_df.dropna(subset=["val_loss"])
+if args.get_metrics:
+    print("Metric-evaluation on the validation set")
+    # Metrics evaluation
+    # Validate on m4 weekly
+    forecast_it, ts_it = make_evaluation_predictions(
+        dataset=val_dataset, predictor=predictor
+    )
+    forecasts = list(forecast_it)
+    tss = list(ts_it)
+    evaluator = Evaluator()
+    agg_metrics, ts_metrics = evaluator(
+        iter(tss), iter(forecasts), num_series=len(val_dataset)
+    )
+    for key, value in agg_metrics.items():
+        logger[0].log_metrics({"val-metrics/"+key: value})
 
-# fig, ax = plt.subplots()
-# ax.plot(train_loss["epoch"], train_loss["train_loss"], label= "train")
-# ax.plot(val_loss["epoch"], val_loss["val_loss"], label="val")
-# ax.legend()
-# ax.set_xscale("log")
-# fig.savefig("data-scaling-logs/"+experiment_name+"/version_"+str(experiment_version)+"/loss.png") 
-# plt.close(fig)  
+
+    # Validate on test
+    print("Metric-evaluation on the test set")
+    forecast_it, ts_it = make_evaluation_predictions(
+        dataset=test_dataset, predictor=predictor
+    )
+    forecasts = list(forecast_it)
+    tss = list(ts_it)
+    evaluator = Evaluator()
+    agg_metrics, ts_metrics = evaluator(
+        iter(tss), iter(forecasts), num_series=len(test_dataset)
+    )
+    for key, value in agg_metrics.items():
+        logger[0].log_metrics({"test-metrics/"+key: value})

@@ -90,6 +90,7 @@ class LagGPTEstimator(PyTorchLightningEstimator):
         weight_decay: float = 1e-8,
         aug_prob: float = 0.1,
         aug_rate: float = 0.1,
+        dropout = 0.,
         distr_output: DistributionOutput = StudentTOutput(),
         loss: DistributionLoss = NegativeLogLikelihood(),
         num_parallel_samples: int = 100,
@@ -131,6 +132,7 @@ class LagGPTEstimator(PyTorchLightningEstimator):
 
         self.aug_prob = aug_prob
         self.aug_rate = aug_rate
+        self.dropout = dropout
 
         self.ckpt_path = ckpt_path
 
@@ -166,6 +168,7 @@ class LagGPTEstimator(PyTorchLightningEstimator):
             "n_head": self.n_head,
             "scaling": self.scaling,
             "distr_output": self.distr_output,
+            "dropout": self.dropout,
             "num_parallel_samples": self.num_parallel_samples,
         }
         if self.ckpt_path is not None:

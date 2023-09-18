@@ -18,6 +18,26 @@ llama_configs = {
     "65B": dict(n_layer=80, n_head=64, n_embd=8192),
 }
 
+def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None) -> torch.Tensor:
+    L, S = query.size(-2), key.size(-2)
+    scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
+    attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
+    if is_causal:
+        assert attn_mask is None
+        temp_mask = torch.ones(L, S, dtype=torch.bool, device=query.device).tril(diagonal=0)
+        attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
+        attn_bias.to(query.dtype)
+
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_mask.masked_fill_(attn_mask.logical_not(), float("-inf"))
+        else:
+            attn_bias += attn_mask
+    attn_weight = query @ key.transpose(-2, -1) * scale_factor
+    attn_weight += attn_bias
+    attn_weight = torch.softmax(attn_weight, dim=-1)
+    attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
+    return attn_weight @ value
 
 @dataclass
 class LTSMConfig:
@@ -26,6 +46,7 @@ class LTSMConfig:
     n_layer: int = 32
     n_head: int = 32
     n_embd: int = 4096
+    dropout: float = 0
 
 
 class Block(nn.Module):
@@ -56,6 +77,8 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.block_size = config.block_size
         self.rope_cache: Optional[torch.Tensor] = None
+
+        self.dropout = config.dropout
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # batch size, sequence length, embedding dimensionality (n_embd)
@@ -88,8 +111,8 @@ class CausalSelfAttention(nn.Module):
         #  y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 
         # efficient attention using Flash Attention CUDA kernels
-        y = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=0.0, is_causal=True
+        y = scaled_dot_product_attention(
+            q, k, v, attn_mask=None, dropout_p=self.dropout, is_causal=True
         )
 
         y = (
@@ -214,6 +237,7 @@ class LagGPTModel(nn.Module):
         n_embd: int,
         n_head: int,
         distr_output=StudentTOutput(),
+        dropout: float = 0.,
         num_parallel_samples: int = 100,
     ) -> None:
         super().__init__()
@@ -236,6 +260,7 @@ class LagGPTModel(nn.Module):
             n_head=n_head,
             block_size=context_length + prediction_length,
             feature_size=input_size * (len(self.lags_seq)) + 2,
+            dropout=dropout
         )
         self.context_length = context_length
         self.prediction_length = prediction_length
