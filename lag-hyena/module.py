@@ -151,15 +151,17 @@ class HyenaFilter(nn.Module):
 
         self.pos_emb = PositionalEmbedding(emb_dim, seq_len, lr_pos_emb)
 
-        self.implicit_filter = nn.Sequential(
+        self.implicit_filter = [
             nn.Linear(emb_dim, order),
-            act,
-        )
+            act
+            ]
         for i in range(num_inner_mlps):
             self.implicit_filter.append(nn.Linear(order, order))
             self.implicit_filter.append(act)
 
         self.implicit_filter.append(nn.Linear(order, d_model, bias=False))
+
+        self.implicit_filter = nn.Sequential(*self.implicit_filter)
 
         self.modulation = ExponentialModulation(d_model, **kwargs)
 
@@ -408,7 +410,7 @@ def create_mlp_cls(d_model, d_inner=None, device=None, dtype=None):
     mlp_cls = partial(
         Mlp,
         hidden_features=inner_dim,
-        activation=partial(F.gelu, approximate="tanh"),
+        activation=partial(F.gelu),
         **factory_kwargs,
     )
 
