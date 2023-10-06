@@ -500,3 +500,124 @@ class LagGPTModel(nn.Module):
         for block in self.transformer.h:
             block.y_cache = None
             block.attn.kv_cache = None
+
+
+
+
+class LagGPTModelWithoutTimeFeatures(nn.Module):
+    def __init__(
+        self,
+        max_context_length: int,
+        scaling: str,
+        input_size: int,
+        n_layer: int,
+        n_embd: int,
+        n_head: int,
+        lags_seq: List[int],
+        rope_scaling=None,
+        distr_output=StudentTOutput(),
+        num_parallel_samples: int = 100,
+    ) -> None:
+        super().__init__()
+        self.lags_seq = lags_seq
+
+        config = LTSMConfig(
+            n_layer=n_layer,
+            n_embd=n_embd,
+            n_head=n_head,
+            block_size=max_context_length,
+            feature_size=input_size * (len(self.lags_seq)) + 2,
+            rope_scaling=rope_scaling,
+        )
+        self.num_parallel_samples = num_parallel_samples
+
+        if scaling == "mean":
+            self.scaler = MeanScaler(keepdim=True, dim=1)
+        elif scaling == "std":
+            self.scaler = StdScaler(keepdim=True, dim=1)
+        else:
+            self.scaler = NOPScaler(keepdim=True, dim=1)
+        self.distr_output = distr_output
+        self.param_proj = self.distr_output.get_args_proj(config.n_embd)
+
+        self.transformer = nn.ModuleDict(
+            dict(
+                wte=nn.Linear(config.feature_size, config.n_embd),
+                h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+                ln_f=RMSNorm(config.n_embd),
+            )
+        )
+
+    def _init_weights(self, module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(
+                module.weight, mean=0.0, std=0.02 / math.sqrt(2 * self.config.n_layer)
+            )
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(
+                module.weight, mean=0.0, std=0.02 / math.sqrt(2 * self.config.n_layer)
+            )
+
+    def prepare_input(
+        self,
+        past_target: torch.Tensor,
+        past_observed_values: torch.Tensor,
+        future_target: Optional[torch.Tensor] = None,
+    ):
+        scaled_past_target, loc, scale = self.scaler(past_target, past_observed_values)
+
+        if future_target is not None:
+            input = torch.cat(
+                (
+                    scaled_past_target[..., max(self.lags_seq) :],
+                    (future_target[..., :-1] - loc) / scale,
+                ),
+                dim=-1,
+            )
+        else:
+            input = scaled_past_target[..., max(self.lags_seq) :]
+
+        prior_input = (past_target[..., : max(self.lags_seq)] - loc) / scale
+        lags = lagged_sequence_values(self.lags_seq, prior_input, input, dim=-1)
+
+        static_feat = torch.cat((loc.abs().log1p(), scale.log()), dim=-1)
+        expanded_static_feat = unsqueeze_expand(
+            static_feat, dim=-2, size=lags.shape[-2]
+        )
+
+        return torch.cat((lags, expanded_static_feat), dim=-1), loc, scale
+
+    def forward(
+        self,
+        past_target: torch.Tensor,
+        past_observed_values: torch.Tensor,
+        future_target: Optional[torch.Tensor] = None,
+        is_test: bool = False,
+    ) -> torch.Tensor:
+        transformer_input, loc, scale = self.prepare_input(
+            past_target=past_target,
+            past_observed_values=past_observed_values,
+            future_target=future_target,
+        )
+
+        # forward the LLaMA model itself
+        x = self.transformer.wte(
+            transformer_input
+        )  # token embeddings of shape (b, t, n_embd)
+
+        for block in self.transformer.h:
+            x = block(x, is_test)
+        x = self.transformer.ln_f(x)
+
+        params = self.param_proj(x)
+        return params, loc, scale
+
+    def reset_cache(self) -> None:
+        """
+        Resets all cached key-values in attention.
+        Has to be called after prediction loop in predictor
+        """
+        for block in self.transformer.h:
+            block.y_cache = None
+            block.attn.kv_cache = None
+
